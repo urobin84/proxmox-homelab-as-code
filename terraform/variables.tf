@@ -51,6 +51,10 @@ variable "containers" {
     swap_mb     = optional(number)
     disk_gb     = optional(number)
     nameservers = optional(list(string))
+    # Urutan start saat host boot (kecil = lebih dulu; shutdown = urutan
+    # terbalik) & jeda detik sebelum LXC urutan berikutnya distart
+    startup_order    = optional(number)
+    startup_up_delay = optional(number, 0)
     # Disk tambahan (volume di datastore lxc_defaults.datastore)
     mount_points = optional(list(object({
       path    = string

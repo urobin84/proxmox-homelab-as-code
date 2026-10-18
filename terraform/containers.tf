@@ -47,6 +47,15 @@ resource "proxmox_virtual_environment_container" "lxc" {
     size         = each.value.disk_gb
   }
 
+  # Urutan boot: repo backup/monitoring → database → Redis → aplikasi (lihat tfvars)
+  dynamic "startup" {
+    for_each = each.value.startup_order == null ? [] : [1]
+    content {
+      order    = each.value.startup_order
+      up_delay = each.value.startup_up_delay
+    }
+  }
+
   # PERHATIAN: provider bpg menganggap TAMBAH/UBAH mount_point = buat ulang
   # container (forces replacement) - ditolak prevent_destroy. Untuk LXC yang
   # sudah ada: tambahkan di tfvars, lalu di host pve jalankan

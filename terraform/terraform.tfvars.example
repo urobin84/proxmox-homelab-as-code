@@ -27,30 +27,40 @@ containers = {
     ip          = "192.168.100.101"
     mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
     role        = "app-engine"
+    startup_order    = 4 # aplikasi - terakhir
+    startup_up_delay = 0
   }
   "102" = {
     hostname    = "DRC-APP-STANBY"
     ip          = "192.168.100.102"
     mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
     role        = "app-standby"
+    startup_order    = 4 # aplikasi - terakhir
+    startup_up_delay = 0
   }
   "103" = {
     hostname    = "DC-WORKER-OR-REDIS"
     ip          = "192.168.100.103"
     mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
     role        = "worker-cache"
+    startup_order    = 3 # Redis
+    startup_up_delay = 10
   }
   "104" = {
     hostname    = "DC-DATABASE"
     ip          = "192.168.100.104"
     mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
     role        = "database"
+    startup_order    = 2 # database
+    startup_up_delay = 30
   }
   "105" = {
     hostname    = "DRC-REPLICA-DB"
     ip          = "192.168.100.105"
     mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
     role        = "database-replica"
+    startup_order    = 2 # database
+    startup_up_delay = 30
   }
   "106" = {
     hostname    = "BACKUP-AND-MONITORING"
@@ -61,5 +71,7 @@ containers = {
       # Repositori pgBackRest (PITR) - terpisah dari disk sistem & data monitoring
       { path = "/var/lib/pgbackrest", size_gb = 30 },
     ]
+    startup_order    = 1 # repo pgBackRest + monitoring - paling awal (tujuan arsip WAL harus siap sebelum DB)
+    startup_up_delay = 15
   }
 }

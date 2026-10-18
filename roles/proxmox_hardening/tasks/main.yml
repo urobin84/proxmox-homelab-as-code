@@ -7,6 +7,23 @@
 #   - rule pve-firewall untuk scrape dari LXC 106
 # =============================================================================
 
+# Override manual di /etc/hosts memaku repo Proxmox ke IP CDN lama yang mati
+# → host tidak pernah menerima update Proxmox. Biarkan DNS yang menentukan.
+- name: Hapus override /etc/hosts untuk repo Proxmox
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^\s*[0-9a-fA-F.:]+\s+(.*\s)?(download|enterprise)\.proxmox\.com(\s|$)'
+    state: absent
+    backup: yes
+
+# Sisa build ISO installer (mmdebstrap) - mematikan pengecekan kedaluwarsa
+# metadata repo, sehingga mirror basi/replay attack tidak terdeteksi
+- name: Aktifkan lagi pengecekan kedaluwarsa metadata apt
+  ansible.builtin.lineinfile:
+    path: /etc/apt/apt.conf.d/99mmdebstrap
+    regexp: '^\s*Acquire::Check-Valid-Until'
+    state: absent
+
 # Satu repo yang down (mis. download.proxmox.com) tidak boleh menggagalkan
 # role - paket di bawah berasal dari repo Debian
 - name: Update apt cache (toleran terhadap repo yang down)
