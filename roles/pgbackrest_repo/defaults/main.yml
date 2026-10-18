@@ -1,0 +1,24 @@
+---
+# =============================================================================
+# Role Defaults: pgbackrest_repo - repositori backup PITR (LXC 106)
+# Disk: mount point /var/lib/pgbackrest (30GB, Terraform mount_points)
+# =============================================================================
+pgbackrest_stanza: "main"
+pgbackrest_user: "pgbackrest"
+pgbackrest_home: "/home/pgbackrest"
+pgbackrest_repo_path: "/var/lib/pgbackrest/repo"
+pgbackrest_pg_path: "/var/lib/postgresql/16/main"
+
+# Host PostgreSQL (urutan tidak penting - pgBackRest mendeteksi primary sendiri,
+# sehingga tetap jalan setelah failover-db.yml menukar peran)
+pgbackrest_pg_hosts: "{{ groups['database'] + groups['database_replica'] }}"
+
+# Retensi: 2 backup full (+ diff & WAL di antaranya) ≈ jendela PITR 1-2 minggu
+pgbackrest_retention_full: 2
+
+# Jadwal (Asia/Jakarta) - sebelum vzdump 02:00 agar backup terbaru ikut tersalin
+pgbackrest_full_schedule: "Sun *-*-* 01:00:00 Asia/Jakarta"
+pgbackrest_diff_schedule: "Mon..Sat *-*-* 01:00:00 Asia/Jakarta"
+pgbackrest_verify_schedule: "Sun *-*-* 04:00:00 Asia/Jakarta"
+
+pgbackrest_textfile_dir: "/var/lib/prometheus/node-exporter"

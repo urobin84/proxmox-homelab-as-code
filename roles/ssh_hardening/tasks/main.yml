@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# Role: ssh_hardening - dipakai role common (LXC) & proxmox_hardening (pve)
+# =============================================================================
+
+# Jangan kunci diri sendiri: password hanya dimatikan jika ada key terpasang
+- name: Pastikan root punya authorized_keys sebelum password dimatikan
+  ansible.builtin.stat:
+    path: /root/.ssh/authorized_keys
+  register: root_authorized_keys
+  failed_when: not root_authorized_keys.stat.exists or root_authorized_keys.stat.size == 0
+
+# 10-* dibaca sebelum 50-cloud-init.conf; di sshd nilai pertama yang menang.
+# Validasi = file baru + config utama digabung, sebelum file dipasang
+# (ssh.socket membaca config di setiap koneksi baru - config rusak = terkunci)
+- name: Deploy SSH hardening
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    mode: '0644'
+    validate: >-
+      bash -c 'mkdir -p /run/sshd &&
+      printf "Include %%s\nInclude /etc/ssh/sshd_config\n" "%s" > /tmp/sshd-validate.conf &&
+      sshd -t -f /tmp/sshd-validate.conf; rc=$?; rm -f /tmp/sshd-validate.conf; exit $rc'
+  notify: Reload SSH

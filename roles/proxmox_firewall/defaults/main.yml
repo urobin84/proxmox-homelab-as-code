@@ -1,0 +1,18 @@
+---
+# =============================================================================
+# Role Defaults: proxmox_firewall - mikrosegmentasi LXC di hypervisor
+# Objek dikelola berawalan "hl-" (IPSet & security group level datacenter).
+# Aturan manual di cluster.fw (SSH, 8006, allowed-apps) TIDAK disentuh.
+# =============================================================================
+
+# Admin (SSH, Grafana) - WAJIB diisi di group_vars/all/local.yml (tidak
+# dipublikasikan, lihat local.yml.example). Jika IP berubah & terkunci:
+# Proxmox UI → Datacenter → Firewall → IPSet → hl-admin → tambah IP baru.
+pve_fw_admin_ips: []
+
+# LXC yang firewall-nya diaktifkan (flag firewall=1 di net0). Rollout bertahap:
+#   -e '{"pve_fw_enable_vmids": ["102"]}'
+pve_fw_enable_vmids: "{{ groups['all_lxc'] | map('extract', hostvars, 'lxc_id') | map('string') | list }}"
+
+# Rollback darurat: -e pve_fw_enabled=false  (flag firewall=0 di semua LXC)
+pve_fw_enabled: true

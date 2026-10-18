@@ -1,0 +1,26 @@
+# =============================================================================
+# pgBackRest - REPOSITORY HOST ({{ inventory_hostname }})
+# Dikelola Ansible (role pgbackrest_repo). Berisi kunci enkripsi: mode 0640
+# =============================================================================
+[global]
+repo1-path={{ pgbackrest_repo_path }}
+repo1-retention-full={{ pgbackrest_retention_full }}
+repo1-cipher-type=aes-256-cbc
+repo1-cipher-pass={{ pgbackrest_cipher_pass }}
+repo1-bundle=y
+
+compress-type=zst
+process-max=2
+start-fast=y
+# Ambil data file dari replika (beban primary minimal); WAL tetap dari primary
+backup-standby=y
+
+log-level-console=info
+log-level-file=detail
+
+[{{ pgbackrest_stanza }}]
+{% for host in pgbackrest_pg_hosts %}
+pg{{ loop.index }}-host={{ hostvars[host].ansible_host }}
+pg{{ loop.index }}-host-user=postgres
+pg{{ loop.index }}-path={{ pgbackrest_pg_path }}
+{% endfor %}

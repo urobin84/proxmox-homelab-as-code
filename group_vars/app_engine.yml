@@ -1,0 +1,8 @@
+---
+# LXC 101 - DC-APP-ENGINE
+ufw_rules:
+  - { port: "80", from: "{{ lan_cidr }}", comment: "nginx host -> mqr-web-service" }
+  - { port: "443", from: "{{ lan_cidr }}", comment: "nginx host (https)" }
+  - { port: "8080", from: "{{ lan_cidr }}", comment: "mqr-web-service" }
+  - { port: "4317", from: "{{ lan_cidr }}", comment: "Alloy OTLP gRPC" }
+  - { port: "4318", from: "{{ lan_cidr }}", comment: "Alloy OTLP HTTP" }

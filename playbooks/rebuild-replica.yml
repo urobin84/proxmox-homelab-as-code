@@ -1,0 +1,69 @@
+---
+# =============================================================================
+# Jadikan host di group database_replica sebagai replika dari primary saat ini
+# (db_host). Dipakai setelah failover-db.yml: primary lama → replika baru.
+# Data lokal host replika DIHAPUS lalu disalin ulang dari primary.
+#
+#   ansible-playbook playbooks/rebuild-replica.yml -e confirm=REBUILD-REPLICA
+# =============================================================================
+
+- name: "Rebuild replika | konfirmasi"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Wajib konfirmasi (data lokal replika akan dihapus)
+      ansible.builtin.assert:
+        that: (confirm | default('')) == 'REBUILD-REPLICA'
+        fail_msg: >-
+          Data PostgreSQL di {{ groups['database_replica'][0] }} akan DIHAPUS & disalin ulang dari
+          primary {{ groups['database'][0] }} ({{ db_host }}). Jalankan dengan -e confirm=REBUILD-REPLICA
+
+    - name: Pastikan replika bukan primary aktif
+      ansible.builtin.assert:
+        that: hostvars[groups['database_replica'][0]].ansible_host != db_host
+        fail_msg: "database_replica sama dengan db_host - inventory/group_vars tidak konsisten. Dibatalkan."
+
+- name: "Rebuild replika | nyalakan LXC (jika di-fence)"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  vars:
+    replica_id: "{{ hostvars[groups['database_replica'][0]].lxc_id }}"
+  tasks:
+    - name: Aktifkan kembali start otomatis
+      ansible.builtin.command:
+        cmd: "pct set {{ replica_id }} --onboot 1"
+      changed_when: false
+
+    - name: Start LXC jika mati
+      ansible.builtin.shell: "pct status {{ replica_id }} | grep -q running || { pct start {{ replica_id }} && echo STARTED; }"
+      register: rr_start
+      changed_when: "'STARTED' in rr_start.stdout"
+
+    - name: Tunggu SSH LXC replika
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[groups['database_replica'][0]].ansible_host }}"
+        port: 22
+        timeout: 120
+      delegate_to: localhost
+      become: false
+      when: rr_start is changed
+
+- name: "Rebuild replika | salin ulang dari primary"
+  hosts: database_replica
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: pg_dump harian hanya di primary
+      ansible.builtin.systemd:
+        name: pg-backup.timer
+        state: stopped
+        enabled: no
+      failed_when: false
+
+    - name: Replika dari primary saat ini
+      ansible.builtin.include_role:
+        name: postgres_replica
+      vars:
+        pg_replica_reinit: true

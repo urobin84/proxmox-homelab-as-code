@@ -1,0 +1,97 @@
+---
+# =============================================================================
+# Role: redis_server - Redis 7 untuk cache, session & antrean (LXC 103)
+# Konfigurasi homelab di file terpisah (include) agar redis.conf bawaan paket
+# tetap utuh dan upgrade paket tidak konflik.
+# =============================================================================
+
+- name: Install Redis
+  ansible.builtin.apt:
+    name: redis-server
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+# Sertifikat harus ada SEBELUM Redis di-restart dengan konfigurasi TLS
+- name: Sertifikat TLS Redis (CA homelab)
+  ansible.builtin.include_role:
+    name: tls_cert
+  vars:
+    tls_cert_name: redis
+    tls_cert_dir: "{{ redis_tls_dir }}"
+    tls_cert_owner: redis
+    tls_cert_group: redis
+  when: redis_tls_enabled | bool
+
+- name: Restart Redis jika sertifikat diperbarui
+  ansible.builtin.debug:
+    msg: "Sertifikat Redis baru - Redis akan di-restart"
+  changed_when: true
+  notify: Restart Redis
+  when: redis_tls_enabled | bool and tls_cert_installed is defined and tls_cert_installed is changed
+
+- name: Deploy konfigurasi Redis homelab
+  ansible.builtin.template:
+    src: redis-homelab.conf.j2
+    dest: /etc/redis/redis-homelab.conf
+    owner: redis
+    group: redis
+    mode: '0640'
+  no_log: true
+  notify: Restart Redis
+
+# include di akhir file = nilainya menimpa default redis.conf
+- name: Include konfigurasi homelab dari redis.conf
+  ansible.builtin.lineinfile:
+    path: /etc/redis/redis.conf
+    line: "include /etc/redis/redis-homelab.conf"
+    insertafter: EOF
+  notify: Restart Redis
+
+- name: Aktifkan & start Redis
+  ansible.builtin.systemd:
+    name: redis-server
+    enabled: yes
+    state: started
+
+- name: Terapkan konfigurasi sekarang
+  ansible.builtin.meta: flush_handlers
+
+- name: Izinkan Redis dari host aplikasi
+  community.general.ufw:
+    rule: allow
+    port: "{{ redis_port | string }}"
+    proto: tcp
+    from_ip: "{{ hostvars[item].ansible_host }}"
+    comment: "Redis"
+  loop: "{{ redis_client_groups | map('extract', groups) | select('defined') | flatten }}"
+
+- name: Izinkan probe TLS dari monitoring (tanpa password - hanya handshake)
+  community.general.ufw:
+    rule: allow
+    port: "{{ redis_port | string }}"
+    proto: tcp
+    from_ip: "{{ item }}"
+    comment: "Redis (blackbox TLS probe)"
+  loop: "{{ redis_probe_hosts }}"
+
+- name: Pastikan TLS wajib & password wajib
+  ansible.builtin.shell: |
+    set -e
+    TLS="--tls --cacert {{ redis_tls_dir }}/ca.crt"
+    plain=$(timeout 5 redis-cli -h 127.0.0.1 -p {{ redis_port }} PING 2>&1 || true)
+    noauth=$(redis-cli $TLS -h 127.0.0.1 -p {{ redis_port }} PING 2>&1 || true)
+    auth=$(REDISCLI_AUTH="$RPW" redis-cli $TLS -h {{ redis_bind_ip }} -p {{ redis_port }} --no-auth-warning PING)
+    echo "tanpa-tls=[${plain}] tls-tanpa-password=[${noauth}] tls+password=[${auth}]"
+    ! echo "$plain" | grep -q PONG && echo "$noauth" | grep -q NOAUTH && [ "$auth" = "PONG" ]
+  args:
+    executable: /bin/bash
+  environment:
+    RPW: "{{ redis_password }}"
+  register: redis_auth_check
+  changed_when: false
+  no_log: true
+
+- name: Status Redis
+  ansible.builtin.debug:
+    msg: "{{ redis_auth_check.stdout }}"

@@ -1,0 +1,70 @@
+---
+# =============================================================================
+# Role: app_standby - salinan identik stack aplikasi primary (warm standby)
+#   1. Kode + .env + upload  : 101 → 102 (tar lewat SSH, hanya jika berbeda)
+#   2. Image Docker          : docker save | docker load (byte-identik, tanpa
+#                              build ulang → tidak ada pergeseran versi paket)
+#   3. Jalankan stack        : role app_engine (compose + nginx host :80)
+# Data dialirkan lewat controller (Mac) via SSH terenkripsi; tidak ada trust
+# SSH langsung antar LXC.
+# =============================================================================
+
+- name: Checksum kode di primary & standby
+  ansible.builtin.shell: |
+    cd {{ app_standby_dir }} 2>/dev/null || { echo kosong; exit 0; }
+    find . -type f {% for e in app_standby_excludes %}{% if '/' in e %}-not -path './{{ e }}'{% else %}-not -name '{{ e }}'{% endif %} {% endfor %}-print0 \
+      | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16
+  delegate_to: "{{ item }}"
+  loop: ["{{ app_standby_source }}", "{{ inventory_hostname }}"]
+  register: code_sums
+  changed_when: false
+
+# Cermin tepat: ekstrak ke direktori sementara lalu rsync --delete, sehingga
+# file yang DIHAPUS di primary juga hilang di standby (tar saja hanya menambah)
+- name: Sinkronkan kode aplikasi dari primary
+  ansible.builtin.shell: |
+    set -o pipefail
+    ssh -i {{ app_standby_ssh_key }} -o IdentitiesOnly=yes -o BatchMode=yes root@{{ hostvars[app_standby_source].ansible_host }} \
+      "tar -C {{ app_standby_dir | dirname }} -czf - {% for e in app_standby_excludes %}--exclude='{{ e if '/' not in e else (app_standby_dir | basename) ~ '/' ~ e }}' {% endfor %}{{ app_standby_dir | basename }}" \
+    | ssh -i {{ app_standby_ssh_key }} -o IdentitiesOnly=yes -o BatchMode=yes root@{{ ansible_host }} \
+      "set -e; tmp=\$(mktemp -d {{ app_standby_dir }}.sync-XXXX); tar -C \$tmp -xzf -; \
+       mkdir -p {{ app_standby_dir }}; \
+       rsync -a --delete {% for e in app_standby_excludes %}--exclude='{{ e if '/' not in e else '/' ~ e }}' {% endfor %}\$tmp/{{ app_standby_dir | basename }}/ {{ app_standby_dir }}/; \
+       rm -rf \$tmp"
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  when: code_sums.results[0].stdout != code_sums.results[1].stdout
+
+# Bukan .Id: Docker dengan containerd image store (LXC baru) menghitung ID dari
+# manifest, sehingga image identik tetap punya ID berbeda dengan overlay2 klasik.
+# Isi image = daftar digest layer + waktu build.
+- name: Sidik jari image aplikasi di primary & standby
+  ansible.builtin.shell: >-
+    docker image inspect {{ app_standby_image }}
+    --format '{{ '{{' }}range .RootFS.Layers{{ '}}' }}{{ '{{' }}.{{ '}}' }}{{ '{{' }}end{{ '}}' }}|{{ '{{' }}.Created{{ '}}' }}'
+    | sha256sum | cut -c1-16
+  delegate_to: "{{ item }}"
+  loop: ["{{ app_standby_source }}", "{{ inventory_hostname }}"]
+  register: image_ids
+  changed_when: false
+  failed_when: false
+
+- name: Salin image aplikasi dari primary (docker save | docker load)
+  ansible.builtin.shell: |
+    set -o pipefail
+    ssh -i {{ app_standby_ssh_key }} -o IdentitiesOnly=yes -o BatchMode=yes root@{{ hostvars[app_standby_source].ansible_host }} \
+      "docker save {{ app_standby_image }} nginx:alpine | gzip -1" \
+    | ssh -i {{ app_standby_ssh_key }} -o IdentitiesOnly=yes -o BatchMode=yes root@{{ ansible_host }} \
+      "gunzip | docker load"
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  when: image_ids.results[0].stdout != image_ids.results[1].stdout
+  notify: Recreate standby stack
+
+- name: Jalankan stack aplikasi (sama dengan primary)
+  ansible.builtin.include_role:
+    name: app_engine

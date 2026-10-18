@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-backup.sh
+# LXC 106 - BACKUP-AND-MONITORING
+# Proxmox Node: pve (ASUS TUF)
+#
+# PENTING tentang storage:
+#   - BackupFolder (pve) → bind mount ke /mnt/backups di LXC 106
+#   - gdrive_backup (pve) → bind mount ke /mnt/gdrive_backup di LXC 106
+#   Kedua storage ini SUDAH dikonfigurasi di Proxmox - Ansible TIDAK mengubahnya.
+#   Script ini hanya menulis ke path tersebut.
+#
+# Dikelola oleh Ansible (jangan edit manual)
+# =============================================================================
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Konfigurasi - sesuai bind mount yang sudah ada di Proxmox
+# ---------------------------------------------------------------------------
+BACKUP_DIR="{{ backup_base_dir }}"          # /mnt/backups (BackupFolder bind mount)
+GDRIVE_DIR="{{ gdrive_mount_path }}"        # /mnt/gdrive_backup (gdrive_backup bind mount)
+BANDWIDTH_LIMIT="{{ rclone_bandwidth_limit }}"
+RETENTION_DAYS="{{ backup_retention_days }}"
+DATE=$(date +"%Y%m%d_%H%M%S")
+LOG_PREFIX="[$(date '+%Y-%m-%d %H:%M:%S')]"
+
+# Sumber data
+APP_ENGINE_HOST="{{ app_engine_host }}"   # DC-APP-ENGINE
+DB_HOST="{{ db_host }}"           # DC-DATABASE
+
+echo "==============================================================="
+echo "${LOG_PREFIX} Memulai backup harian HomeLab"
+echo "==============================================================="
+
+# ---------------------------------------------------------------------------
+# Fungsi helper
+# ---------------------------------------------------------------------------
+backup_remote_dir() {
+    local label="$1"
+    local remote_host="$2"
+    local remote_path="$3"
+    local local_dest="${BACKUP_DIR}/${label}"
+    local archive="${local_dest}/${label}_${DATE}.tar.gz"
+
+    echo "${LOG_PREFIX} Backup ${label} dari ${remote_host}:${remote_path}"
+    mkdir -p "${local_dest}"
+
+    # Rsync dari remote ke lokal dulu (efisien, hanya diff)
+    rsync -az --delete \
+        -e "ssh -o StrictHostKeyChecking=no" \
+        "root@${remote_host}:${remote_path}/" \
+        "${local_dest}/latest/" \
+        && echo "${LOG_PREFIX} Rsync ${label}: OK" \
+        || { echo "${LOG_PREFIX} ERROR: Rsync ${label} gagal"; return 1; }
+
+    # Kompres snapshot terbaru
+    tar -czf "${archive}" -C "${local_dest}" latest/
+    echo "${LOG_PREFIX} Arsip dibuat: ${archive} ($(du -sh "${archive}" | cut -f1))"
+}
+
+upload_to_gdrive() {
+    local label="$1"
+    local local_path="${BACKUP_DIR}/${label}"
+    local gdrive_path="${GDRIVE_REMOTE}/${label}"
+
+    echo "${LOG_PREFIX} Upload ${label} → Google Drive (limit: ${BANDWIDTH_LIMIT}/s)..."
+    rclone copy \
+        "${local_path}" \
+        "${gdrive_path}" \
+        --bwlimit "${BANDWIDTH_LIMIT}" \
+        --transfers 2 \
+        --checkers 4 \
+        --retries 3 \
+        --low-level-retries 10 \
+        --stats 60s \
+        --log-level INFO \
+        --include "*.tar.gz" \
+        && echo "${LOG_PREFIX} Upload ${label}: OK" \
+        || echo "${LOG_PREFIX} WARNING: Upload ${label} gagal (akan dicoba ulang besok)"
+}
+
+# ---------------------------------------------------------------------------
+# 1. Backup Volume Docker App Engine (LXC 101 - DC-APP-ENGINE)
+# ---------------------------------------------------------------------------
+echo "${LOG_PREFIX} === Backup Docker Volumes (DC-APP-ENGINE: ${APP_ENGINE_HOST}) ==="
+
+backup_remote_dir "mqr"  "${APP_ENGINE_HOST}" "/opt/apps/mqr-data"
+backup_remote_dir "dkm"  "${APP_ENGINE_HOST}" "/opt/apps/dkm-data"
+backup_remote_dir "dev"  "${APP_ENGINE_HOST}" "/opt/apps/dev-data"
+
+# Backup file docker-compose & nginx configs
+echo "${LOG_PREFIX} Backup konfigurasi docker-compose..."
+mkdir -p "${BACKUP_DIR}/configs"
+scp -o StrictHostKeyChecking=no \
+    "root@${APP_ENGINE_HOST}:/opt/apps/docker-compose.yml" \
+    "${BACKUP_DIR}/configs/docker-compose_${DATE}.yml"
+
+# ---------------------------------------------------------------------------
+# 2. Backup Database PostgreSQL (LXC 104 - DC-DATABASE)
+# ---------------------------------------------------------------------------
+echo "${LOG_PREFIX} === Backup Database PostgreSQL (DC-DATABASE: ${DB_HOST}) ==="
+mkdir -p "${BACKUP_DIR}/database"
+
+for DB in {{ db_mqr_name }} {{ db_dkm_name }} {{ db_dev_name }}; do
+    echo "${LOG_PREFIX} pg_dump database: ${DB}"
+    # PGPASSWORD diset via env - tidak ada password di command line (aman)
+    ssh -o StrictHostKeyChecking=no "root@${DB_HOST}" \
+        "PGPASSWORD='{{ db_postgres_password }}' pg_dump \
+         -h localhost -p 5432 -U postgres \
+         --no-owner --no-acl --clean --if-exists \
+         -Fc ${DB}" \
+        > "${BACKUP_DIR}/database/${DB}_${DATE}.dump" \
+        && echo "${LOG_PREFIX} pg_dump ${DB}: OK (format custom, restore via pg_restore)" \
+        || echo "${LOG_PREFIX} ERROR: pg_dump ${DB} gagal"
+done
+
+# Buat juga plain SQL dump (lebih portable)
+for DB in {{ db_mqr_name }} {{ db_dkm_name }} {{ db_dev_name }}; do
+    echo "${LOG_PREFIX} pg_dump SQL plain: ${DB}"
+    ssh -o StrictHostKeyChecking=no "root@${DB_HOST}" \
+        "PGPASSWORD='{{ db_postgres_password }}' pg_dump \
+         -h localhost -p 5432 -U postgres \
+         --no-owner --no-acl --clean --if-exists \
+         ${DB} | gzip" \
+        > "${BACKUP_DIR}/database/${DB}_${DATE}.sql.gz" \
+        && echo "${LOG_PREFIX} SQL dump ${DB}: OK" \
+        || echo "${LOG_PREFIX} WARNING: SQL dump ${DB} gagal"
+done
+
+# ---------------------------------------------------------------------------
+# 3. Upload semua ke Google Drive (bandwidth dibatasi)
+# ---------------------------------------------------------------------------
+echo "${LOG_PREFIX} === Upload ke Google Drive ==="
+
+for LABEL in mqr dkm dev database configs; do
+    upload_to_gdrive "${LABEL}"
+done
+
+# ---------------------------------------------------------------------------
+# 4. Hapus backup lokal lama (hemat disk LXC 106)
+# ---------------------------------------------------------------------------
+echo "${LOG_PREFIX} === Membersihkan arsip lokal > ${RETENTION_DAYS} hari ==="
+find "${BACKUP_DIR}" -name "*.tar.gz" -mtime "+${RETENTION_DAYS}" -delete
+find "${BACKUP_DIR}" -name "*.dump"   -mtime "+${RETENTION_DAYS}" -delete
+find "${BACKUP_DIR}" -name "*.sql.gz" -mtime "+${RETENTION_DAYS}" -delete
+find "${BACKUP_DIR}/configs" -name "*.yml" -mtime "+${RETENTION_DAYS}" -delete
+
+# ---------------------------------------------------------------------------
+# 5. Laporan ringkas
+# ---------------------------------------------------------------------------
+echo "==============================================================="
+echo "${LOG_PREFIX} Backup selesai."
+echo "Ukuran total direktori backup lokal: $(du -sh ${BACKUP_DIR} | cut -f1)"
+echo "==============================================================="

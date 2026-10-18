@@ -1,0 +1,96 @@
+# =============================================================================
+# GROUP VARS: all/main.yml - Variabel umum (non-rahasia)
+# Proxmox Node: pve | ASUS TUF i7-8750H | 31.2GB RAM | 66.35GB HD
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Domain & Environment
+# ---------------------------------------------------------------------------
+environment_type: production
+base_domain: "mqr.home"          # Ganti dengan domain lokal/publik Anda
+
+mqr_domain: "mqr.{{ base_domain }}"
+dkm_domain: "dkm.{{ base_domain }}"
+dev_domain: "dev.{{ base_domain }}"
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+docker_compose_version: "2.24.0"
+docker_network_name: "homelab_net"
+docker_network_subnet: "172.20.0.0/16"
+
+# ---------------------------------------------------------------------------
+# App Port Mapping (di dalam Docker network)
+# ---------------------------------------------------------------------------
+# MQR
+mqr_laravel_port: 8000
+mqr_nextjs_port: 3000
+
+# DKM
+dkm_fiber_port: 8080
+dkm_vue_port: 3001
+
+# DEV
+dev_rust_port: 8888
+dev_nuxt_port: 3002
+
+# Nginx host di LXC aplikasi
+nginx_http_port: 80
+nginx_https_port: 443
+
+# ---------------------------------------------------------------------------
+# Hosts referensi (sesuai nama LXC di Proxmox node: pve)
+# ---------------------------------------------------------------------------
+
+# LXC 101 - DC-APP-ENGINE (App + Nginx)
+app_engine_host: "192.168.100.101"
+app_stanby_host: "192.168.100.102"
+
+# LXC 103 - DC-WORKER-OR-REDIS (Redis + Worker)
+redis_host: "192.168.100.103"
+redis_port: 6379
+worker_host: "192.168.100.103"
+
+# LXC 104 - DC-DATABASE (PostgreSQL primary - bertukar saat failover)
+db_driver: postgresql
+db_host: "192.168.100.104"
+db_port: 5432
+
+# LXC 105 - DRC-REPLICA-DB (PostgreSQL hot standby / DR)
+db_replica_host: "192.168.100.105"
+db_replica_port: 5432
+
+# ---------------------------------------------------------------------------
+# Backup & Monitoring (LXC 106 - BACKUP-AND-MONITORING)
+# PENTING: gdrive_backup dan BackupFolder sudah di-mount di Proxmox host (pve)
+# Path bind mount di LXC 106 (sesuaikan dengan konfigurasi Proxmox Anda):
+# ---------------------------------------------------------------------------
+backup_base_dir: "/mnt/backups"           # Bind mount dari BackupFolder (pve)
+gdrive_mount_path: "/mnt/gdrive_backup"   # Bind mount dari gdrive_backup (pve)
+backup_gdrive_folder: "homelab-backups"
+backup_retention_days: 30
+rclone_bandwidth_limit: "2M"      # Batasi rclone ke 2MB/s (jaga stabilitas jaringan rumah)
+backup_schedule_hour: "02"        # Jam 02:00 WIB
+backup_schedule_minute: "00"
+
+# ---------------------------------------------------------------------------
+# Observability (LXC 106) - Prometheus + Loki + Tempo + Grafana
+# Apps kirim OTLP ke Grafana Alloy di host yang sama (LXC 101)
+# ---------------------------------------------------------------------------
+# Root repo = lokasi ansible.cfg. JANGAN pakai playbook_dir/.. - site.yml ada
+# di root sedangkan playbook lain di playbooks/, hasilnya berbeda.
+repo_root: "{{ ansible_config_file | dirname }}"
+
+monitoring_host: "192.168.100.106"
+otel_exporter_endpoint: "http://{{ app_engine_host }}:4318"
+
+# ---------------------------------------------------------------------------
+# Firewall (UFW) - dikelola role common
+# Rule tambahan per group ada di group_vars/<group>.yml (ufw_rules)
+# CATATAN: port yang di-publish Docker melewati UFW (chain iptables DOCKER)
+# ---------------------------------------------------------------------------
+lan_cidr: "192.168.100.0/24"
+ufw_common_rules:
+  - { port: "22", from: "any", comment: "SSH" }
+  - { port: "9100", from: "{{ monitoring_host }}", comment: "node exporter" }

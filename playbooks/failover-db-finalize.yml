@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# Selesaikan langkah 5 failover-db.yml secara manual: tukar peran DB di kode
+# (inventory & group_vars). Dipakai jika failover-db.yml berhenti setelah
+# promote (mis. verifikasi aplikasi gagal) - DB sudah pindah, kode belum.
+#
+# Hanya berjalan jika kondisi NYATA cocok: host di [database_replica] sudah
+# primary (menerima tulisan) dan host di [database] tidak menjalankan primary.
+#   ansible-playbook playbooks/failover-db-finalize.yml
+# =============================================================================
+- name: "Finalize failover | cek kondisi nyata"
+  hosts: "{{ groups['database'][0] }}:{{ groups['database_replica'][0] }}"
+  become: yes
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Apakah PostgreSQL di host ini primary?
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAX -c "SELECT NOT pg_is_in_recovery()" 2>/dev/null || echo "tidak-jalan"
+      register: fin_primary
+      changed_when: false
+
+- name: "Finalize failover | tukar peran di kode"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    fo_old: "{{ groups['database'][0] }}"
+    fo_new: "{{ groups['database_replica'][0] }}"
+    repo: "{{ repo_root }}"
+  tasks:
+    - name: Pastikan failover memang sudah terjadi
+      ansible.builtin.assert:
+        that:
+          - (hostvars[fo_new].fin_primary.stdout | default('')) | trim == 't'
+          - (hostvars[fo_old].fin_primary.stdout | default('tidak-jalan')) | trim != 't'
+        fail_msg: >-
+          Kondisi tidak cocok: {{ fo_new }} primary={{ hostvars[fo_new].fin_primary.stdout | default('?') }},
+          {{ fo_old }} primary={{ hostvars[fo_old].fin_primary.stdout | default('tidak terjangkau') }}.
+          Tidak ada yang diubah.
+
+    - name: Tukar peran DB di inventory & group_vars
+      ansible.builtin.include_tasks: tasks/swap-db-roles.yml

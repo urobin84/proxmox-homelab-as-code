@@ -1,0 +1,9 @@
+---
+# LXC 106 - BACKUP-AND-MONITORING
+ufw_rules:
+  - { port: "3000", from: "{{ lan_cidr }}", comment: "Grafana" }
+  - { port: "3100", from: "{{ app_engine_host }}", comment: "Loki push dari Alloy" }
+  - { port: "9090", from: "{{ app_engine_host }}", comment: "Prometheus remote write dari Alloy" }
+  - { port: "4317", from: "{{ app_engine_host }}", comment: "Tempo OTLP dari Alloy" }
+  # Prometheus (container, subnet monitoring_net) scrape node exporter host ini
+  - { port: "9100", from: "172.21.0.0/24", comment: "node exporter dari Prometheus (docker)" }

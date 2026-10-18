@@ -1,0 +1,33 @@
+---
+# =============================================================================
+# Role Defaults: redis_server - cache, session & antrean (LXC 103)
+# =============================================================================
+redis_port: 6379
+redis_bind_ip: "{{ ansible_host }}"
+redis_maxmemory: "1gb"
+# noeviction: memori penuh = tulis DITOLAK (error jelas), bukan data antrean/
+# session dibuang diam-diam. Wajib untuk data transaksi.
+redis_maxmemory_policy: "noeviction"
+
+# Klien yang boleh terhubung (UFW): host aplikasi DC & DRC
+redis_client_groups: ["app_engine", "app_stanby"]
+# Hanya TCP/TLS handshake (Blackbox: validasi & masa berlaku sertifikat)
+redis_probe_hosts: ["{{ monitoring_host }}"]
+
+# TLS: port tanpa enkripsi dimatikan; klien wajib rediss:// + CA homelab
+redis_tls_enabled: true
+redis_tls_dir: "/etc/redis/tls"
+
+# Perintah yang dicabut dari user default (ACL Redis 7)
+redis_denied_commands:
+  - flushall
+  - debug
+  - "config|set"
+  - "config|rewrite"
+  - "config|resetstat"
+  - shutdown
+  - module
+  - replicaof
+  - slaveof
+  - failover
+  - monitor

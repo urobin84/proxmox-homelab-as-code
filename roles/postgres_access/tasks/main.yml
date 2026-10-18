@@ -1,0 +1,172 @@
+---
+# =============================================================================
+# Role: postgres_access - batasi akses PostgreSQL ke host aplikasi saja
+#   pg_hba : login hanya dari host di pg_app_client_groups (/32)
+#   UFW    : port 5432 hanya dari host aplikasi + host probe (Blackbox)
+# Rule lokal (socket/localhost) & rule lain di pg_hba.conf tidak diubah.
+# =============================================================================
+
+- name: Kumpulkan IP host aplikasi
+  ansible.builtin.set_fact:
+    pg_app_client_ips: >-
+      {{ pg_app_client_groups | map('extract', groups) | select('defined') | flatten
+         | map('extract', hostvars, 'ansible_host') | list }}
+
+# ---------------------------------------------------------------------------
+# pg_hba.conf (first match wins - blok ditambahkan di akhir file)
+# ---------------------------------------------------------------------------
+- name: Hapus rule pg_hba lama yang mengizinkan seluruh subnet
+  ansible.builtin.lineinfile:
+    path: "{{ pg_hba_path }}"
+    regexp: "{{ pg_hba_legacy_regexp }}"
+    state: absent
+    backup: yes
+  notify: Reload PostgreSQL
+
+- name: Rule pg_hba untuk host aplikasi
+  ansible.builtin.blockinfile:
+    path: "{{ pg_hba_path }}"
+    marker: "# {mark} ANSIBLE - host aplikasi (role postgres_access)"
+    block: |
+      {% for ip in pg_app_client_ips %}
+      host    {{ pg_app_databases | join(',') }}    {{ pg_app_users | join(',') }}    {{ ip }}/32    scram-sha-256
+      {% endfor %}
+    backup: yes
+  notify: Reload PostgreSQL
+
+# ---------------------------------------------------------------------------
+# Streaming replication (primary → replika DR)
+# ---------------------------------------------------------------------------
+- name: Rule pg_hba replikasi (hanya TLS, hanya dari host replika)
+  ansible.builtin.blockinfile:
+    path: "{{ pg_hba_path }}"
+    marker: "# {mark} ANSIBLE - replikasi DR (role postgres_access)"
+    block: |
+      {% for host in pg_replica_hosts %}
+      hostssl replication    {{ pg_replication_user }}    {{ hostvars[host].ansible_host }}/32    scram-sha-256
+      {% endfor %}
+    backup: yes
+  notify: Reload PostgreSQL
+
+- name: Batasi WAL yang ditahan replication slot
+  ansible.builtin.copy:
+    dest: "/etc/postgresql/{{ postgres_version }}/main/conf.d/80-ansible-replication.conf"
+    content: |
+      # Dikelola Ansible (role postgres_access)
+      max_slot_wal_keep_size = {{ pg_max_slot_wal_keep_size }}
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  notify: Reload PostgreSQL
+
+# Password via environment (bukan argumen) agar tidak terlihat di daftar proses/log
+- name: User replikasi
+  ansible.builtin.shell: |
+    set -euo pipefail
+    exists=$(runuser -u postgres -- psql -tAX -c "SELECT 1 FROM pg_roles WHERE rolname = '{{ pg_replication_user }}'")
+    if [ "$exists" != "1" ]; then
+      runuser -u postgres -- psql -q -c "CREATE ROLE {{ pg_replication_user }} WITH REPLICATION LOGIN"
+      echo CHANGED
+    fi
+    # Selalu samakan password dengan vault (scram); tidak menandai changed
+    runuser -u postgres -- psql -q -v pw="$PG_REPL_PW" <<'SQL'
+    ALTER ROLE {{ pg_replication_user }} WITH PASSWORD :'pw';
+    SQL
+  args:
+    executable: /bin/bash
+  environment:
+    PG_REPL_PW: "{{ pg_replication_password }}"
+  register: pg_repl_user
+  changed_when: "'CHANGED' in pg_repl_user.stdout"
+  no_log: true
+  when: pg_replica_hosts | length > 0
+
+- name: Replication slot per replika
+  ansible.builtin.shell: |
+    slot='{{ pg_replication_slot_prefix }}{{ hostvars[item].lxc_id }}'
+    exists=$(runuser -u postgres -- psql -tAX -c "SELECT 1 FROM pg_replication_slots WHERE slot_name = '$slot'")
+    [ "$exists" = "1" ] && exit 0
+    runuser -u postgres -- psql -tAX -c "SELECT pg_create_physical_replication_slot('$slot')" >/dev/null && echo CHANGED
+  loop: "{{ pg_replica_hosts }}"
+  register: pg_slots
+  changed_when: "'CHANGED' in pg_slots.stdout"
+
+- name: Izinkan replikasi dari host replika
+  community.general.ufw:
+    rule: allow
+    port: "5432"
+    proto: tcp
+    from_ip: "{{ hostvars[item].ansible_host }}"
+    comment: "PostgreSQL replication"
+  loop: "{{ pg_replica_hosts }}"
+
+# Primary harus listen di LAN. Dulu hanya di-set manual di postgresql.conf
+# LXC 104 - replika yang dipromosikan (default paket: localhost) jadi tidak
+# terjangkau aplikasi. Perubahan nilai ini butuh RESTART (failover-db.yml
+# me-restart sendiri); di primary yang sudah '*' reload tidak mengubah apa pun.
+- name: Primary listen di semua interface (akses dibatasi pg_hba & UFW)
+  ansible.builtin.copy:
+    dest: "/etc/postgresql/{{ postgres_version }}/main/conf.d/70-ansible-listen.conf"
+    content: |
+      # Dikelola Ansible (role postgres_access)
+      listen_addresses = '*'
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  notify: Reload PostgreSQL
+
+# Audit login: setiap koneksi tercatat dengan IP klien (%h) → Loki
+- name: Log koneksi PostgreSQL beserta IP klien
+  ansible.builtin.copy:
+    dest: "/etc/postgresql/{{ postgres_version }}/main/conf.d/90-ansible-logging.conf"
+    content: |
+      # Dikelola Ansible (role postgres_access)
+      log_connections = on
+      log_line_prefix = '%m [%p] %q%u@%d from %h '
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  notify: Reload PostgreSQL
+
+- name: Terapkan pg_hba & logging sekarang
+  ansible.builtin.meta: flush_handlers
+
+# Reload dengan pg_hba rusak = PostgreSQL tetap memakai rule lama, tapi error
+# terlihat di view ini → gagalkan playbook agar langsung ketahuan
+- name: Pastikan pg_hba.conf tidak mengandung error
+  ansible.builtin.command:
+    cmd: >-
+      runuser -u postgres -- psql -tAX -c
+      "SELECT line_number || ' - ' || error FROM pg_hba_file_rules WHERE error IS NOT NULL"
+  register: pg_hba_errors
+  changed_when: false
+  failed_when: pg_hba_errors.stdout | length > 0
+
+# ---------------------------------------------------------------------------
+# UFW port 5432 (comment sama dengan group_vars/database.yml)
+# ---------------------------------------------------------------------------
+- name: Izinkan PostgreSQL dari host aplikasi
+  community.general.ufw:
+    rule: allow
+    port: "5432"
+    proto: tcp
+    from_ip: "{{ item }}"
+    comment: "PostgreSQL"
+  loop: "{{ pg_app_client_ips }}"
+
+- name: Izinkan TCP connect dari host probe (tanpa izin login di pg_hba)
+  community.general.ufw:
+    rule: allow
+    port: "5432"
+    proto: tcp
+    from_ip: "{{ item }}"
+    comment: "PostgreSQL (blackbox probe)"
+  loop: "{{ pg_probe_hosts }}"
+
+- name: Hapus rule UFW lama 5432 dari seluruh LAN
+  community.general.ufw:
+    rule: allow
+    port: "5432"
+    proto: tcp
+    from_ip: "{{ pg_ufw_legacy_from }}"
+    delete: true

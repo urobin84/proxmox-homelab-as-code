@@ -1,0 +1,162 @@
+# =============================================================================
+# Docker Compose - Observability Stack (LXC 106 - BACKUP-AND-MONITORING)
+# Stack: Prometheus + Loki + Tempo + Grafana
+# Estimasi RAM total: ~1-1.5GB
+#
+# Arsitektur aliran data:
+#   Node exporter (semua LXC, :9100) ←── scrape ── Prometheus
+#   Apps (MQR/DKM/DEV) ── OTLP ──→ Grafana Alloy (LXC 101)
+#   Docker logs (LXC 101) ───────→ Grafana Alloy (LXC 101)
+#     Alloy → Loki       (logs)
+#           → Prometheus (metrics, remote write)
+#           → Tempo      (traces, OTLP)
+#   Semua → Grafana (visualisasi unified)
+# =============================================================================
+
+networks:
+  monitoring_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/24
+
+services:
+
+  # ===========================================================================
+  # GRAFANA - Dashboard & Visualization (unified frontend)
+  # RAM: ~150-300MB | Port: {{ grafana_port }}
+  # ===========================================================================
+  grafana:
+    image: grafana/grafana:{{ grafana_version }}
+    container_name: grafana
+    restart: unless-stopped
+    mem_limit: {{ grafana_memory_limit }}
+    ports:
+      - "{{ grafana_port }}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: "{{ grafana_admin_user }}"
+      GF_SECURITY_ADMIN_PASSWORD: "{{ grafana_admin_password }}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "http://{{ ansible_host }}:{{ grafana_port }}"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_FEATURE_TOGGLES_ENABLE: "traceqlEditor"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: "/etc/grafana/dashboards/{{ grafana_home_dashboard_uid }}.json"
+    volumes:
+      - {{ grafana_data_dir }}:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    networks:
+      - monitoring_net
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ===========================================================================
+  # PROMETHEUS - Metrics Collection & Storage
+  # RAM: ~200-512MB | Port: {{ prometheus_port }}
+  # ===========================================================================
+  prometheus:
+    image: prom/prometheus:{{ prometheus_version }}
+    container_name: prometheus
+    restart: unless-stopped
+    mem_limit: {{ prometheus_memory_limit }}
+    ports:
+      - "{{ prometheus_port }}:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time={{ prometheus_retention_time }}"
+      - "--storage.tsdb.retention.size={{ prometheus_retention_size }}"
+      - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"   # Terima metrics OTLP dari Alloy
+      - "--log.level=warn"
+    volumes:
+      - {{ prometheus_data_dir }}:/prometheus
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    networks:
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===========================================================================
+  # LOKI - Log Aggregation (ringan, pengganti ELK)
+  # RAM: ~150-384MB | Port: {{ loki_port }}
+  # ===========================================================================
+  loki:
+    image: grafana/loki:{{ loki_version }}
+    container_name: loki
+    restart: unless-stopped
+    mem_limit: {{ loki_memory_limit }}
+    ports:
+      - "{{ loki_port }}:3100"
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - {{ loki_data_dir }}:/loki
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+    networks:
+      - monitoring_net
+  # ===========================================================================
+  # BLACKBOX EXPORTER - uptime check HTTP/TCP (tidak di-publish ke host)
+  # RAM: ~10-30MB
+  # ===========================================================================
+  blackbox:
+    image: prom/blackbox-exporter:{{ blackbox_version }}
+    container_name: blackbox
+    restart: unless-stopped
+    mem_limit: {{ blackbox_memory_limit }}
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+      - ./blackbox/ca.crt:/etc/blackbox/ca.crt:ro
+    networks:
+      - monitoring_net
+{% if alertmanager_enabled | bool %}
+
+  # ===========================================================================
+  # ALERTMANAGER - kirim alert Prometheus via email (tidak di-publish ke host)
+  # RAM: ~20-40MB
+  # ===========================================================================
+  alertmanager:
+    image: prom/alertmanager:{{ alertmanager_version }}
+    container_name: alertmanager
+    restart: unless-stopped
+    mem_limit: {{ alertmanager_memory_limit }}
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks:
+      - monitoring_net
+{% endif %}
+{% if monitoring_enable_tracing %}
+
+  # ===========================================================================
+  # TEMPO - Distributed Tracing Backend (penerima OTLP dari Alloy)
+  # RAM: ~150-384MB | Publish hanya OTLP gRPC {{ tempo_otlp_grpc_port }} (dipakai Alloy).
+  # Query (3200) cukup lewat jaringan internal - Grafana memakai http://tempo:3200
+  # ===========================================================================
+  tempo:
+    image: grafana/tempo:{{ tempo_version }}
+    container_name: tempo
+    restart: unless-stopped
+    mem_limit: {{ tempo_memory_limit }}
+    ports:
+      - "{{ tempo_otlp_grpc_port }}:4317"
+    command: ["-config.file=/etc/tempo/tempo.yml"]
+    volumes:
+      - {{ tempo_data_dir }}:/var/tempo
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+    networks:
+      - monitoring_net
+{% endif %}

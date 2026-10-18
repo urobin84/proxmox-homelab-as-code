@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# Role Defaults: postgres_replica - hot standby DR (streaming replication)
+# =============================================================================
+postgres_version: "16"
+pg_replica_data_dir: "/var/lib/postgresql/{{ postgres_version }}/main"
+pg_replica_cluster: "{{ postgres_version }}-main"
+
+pg_primary_host: "{{ db_host }}"          # primary saat ini (group_vars db_host)
+pg_primary_port: "{{ db_port }}"
+pg_replication_user: "replicator"
+pg_replication_slot: "drc_replica_{{ lxc_id }}"
+
+# true = HAPUS data lokal lalu salin ulang dari primary (mis. menjadikan
+# primary lama sebagai replika setelah failover). Tetap ditolak jika host ini
+# adalah primary aktif (db_host) atau masih menerima tulisan.
+pg_replica_reinit: false

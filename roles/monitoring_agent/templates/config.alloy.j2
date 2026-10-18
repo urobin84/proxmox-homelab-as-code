@@ -1,0 +1,115 @@
+// =============================================================================
+// Grafana Alloy - {{ inventory_hostname }}
+// Kirim ke LXC 106: Loki (logs), Prometheus (metrics), Tempo (traces)
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// LOGS: semua Docker container → Loki
+// ---------------------------------------------------------------------------
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  forward_to    = [loki.write.central.receiver]
+}
+
+// Journal host (di-mount read-only ke container) - template sama dengan
+// Alloy native di host lain (symlink ke roles/log_agent/templates)
+{% include 'journal.alloy.j2' %}
+
+loki.write "central" {
+  endpoint {
+    url = "{{ alloy_loki_url }}"
+  }
+  external_labels = {
+    host = "{{ inventory_hostname }}",
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OPENTELEMETRY: apps (OTel SDK) → Alloy → backend pusat
+// ---------------------------------------------------------------------------
+otelcol.receiver.otlp "apps" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+
+  output {
+    metrics = [otelcol.processor.memory_limiter.default.input]
+    logs    = [otelcol.processor.memory_limiter.default.input]
+{% if alloy_enable_tracing %}
+    traces  = [otelcol.processor.memory_limiter.default.input]
+{% endif %}
+  }
+}
+
+otelcol.processor.memory_limiter "default" {
+  check_interval = "1s"
+  limit          = "150MiB"
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+{% if alloy_enable_tracing %}
+    traces  = [otelcol.processor.batch.default.input]
+{% endif %}
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.prometheus.central.input]
+    logs    = [otelcol.exporter.loki.central.input]
+{% if alloy_enable_tracing %}
+    traces  = [otelcol.exporter.otlp.tempo.input]
+{% endif %}
+  }
+}
+
+otelcol.exporter.prometheus "central" {
+  forward_to = [prometheus.remote_write.central.receiver]
+}
+
+prometheus.remote_write "central" {
+  endpoint {
+    url = "{{ alloy_prometheus_remote_write_url }}"
+  }
+}
+
+otelcol.exporter.loki "central" {
+  forward_to = [loki.write.central.receiver]
+}
+{% if alloy_enable_tracing %}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "{{ alloy_tempo_endpoint }}"
+    tls {
+      insecure = true
+    }
+  }
+}
+{% endif %}

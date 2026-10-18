@@ -1,0 +1,90 @@
+---
+# =============================================================================
+# Role: log_agent - Grafana Alloy native dari repo apt.grafana.com
+# User "alloy" ditambah ke grup systemd-journal (baca journal) & adm
+# (baca /var/log/postgresql, dll). RAM dibatasi lewat systemd MemoryMax.
+# =============================================================================
+
+- name: Install prasyarat repo Grafana
+  ansible.builtin.apt:
+    name: [python3-debian, gpg]
+    state: present
+
+- name: Tambahkan repo apt Grafana
+  ansible.builtin.deb822_repository:
+    name: grafana
+    types: deb
+    uris: https://apt.grafana.com
+    suites: stable
+    components: main
+    signed_by: https://apt.grafana.com/gpg.key
+    state: present
+  register: grafana_repo
+
+# update_cache gagal jika SATU repo down (mis. download.proxmox.com di pve),
+# jadi update dilakukan terpisah & toleran
+- name: Update apt cache setelah repo ditambah
+  ansible.builtin.command:
+    cmd: apt-get update -q
+  when: grafana_repo is changed
+  changed_when: false
+  failed_when: false
+
+- name: Install Grafana Alloy
+  ansible.builtin.apt:
+    name: alloy
+    state: present
+
+- name: Tambahkan user alloy ke grup pembaca log
+  ansible.builtin.user:
+    name: alloy
+    groups: [systemd-journal, adm]
+    append: yes
+  notify: Restart Alloy native
+
+- name: Konfigurasi argumen service Alloy
+  ansible.builtin.copy:
+    dest: /etc/default/alloy
+    content: |
+      # Dikelola Ansible (role log_agent)
+      CONFIG_FILE="/etc/alloy/config.alloy"
+      CUSTOM_ARGS="--server.http.listen-addr=127.0.0.1:12345 --disable-reporting"
+      RESTART_ON_UPGRADE=true
+    mode: '0644'
+  notify: Restart Alloy native
+
+- name: Buat direktori drop-in systemd Alloy
+  ansible.builtin.file:
+    path: /etc/systemd/system/alloy.service.d
+    state: directory
+    mode: '0755'
+
+- name: Batasi RAM service Alloy
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/alloy.service.d/10-limits.conf
+    content: |
+      # Dikelola Ansible (role log_agent)
+      [Service]
+      MemoryMax={{ log_agent_memory_max }}
+    mode: '0644'
+  register: alloy_dropin
+  notify: Restart Alloy native
+
+- name: Deploy konfigurasi Alloy
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: /etc/alloy/config.alloy
+    mode: '0644'
+    validate: alloy fmt %s
+  notify: Restart Alloy native
+
+- name: Reload systemd (drop-in Alloy)
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: alloy_dropin is changed
+
+- name: Aktifkan & start Alloy
+  ansible.builtin.systemd:
+    name: alloy
+    enabled: yes
+    state: started

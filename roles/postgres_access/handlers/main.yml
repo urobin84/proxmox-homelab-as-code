@@ -1,0 +1,7 @@
+---
+# Reload (bukan restart): koneksi aktif tidak terputus
+- name: Reload PostgreSQL
+  ansible.builtin.systemd:
+    name: postgresql
+    state: reloaded
+  listen: "Reload PostgreSQL"

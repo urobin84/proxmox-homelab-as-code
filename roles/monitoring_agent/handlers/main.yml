@@ -1,0 +1,6 @@
+---
+- name: Restart Alloy
+  ansible.builtin.command:
+    cmd: docker compose up -d --force-recreate
+    chdir: "{{ alloy_base_dir }}"
+  listen: "Restart Alloy"

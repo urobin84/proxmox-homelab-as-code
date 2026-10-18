@@ -1,0 +1,6 @@
+---
+# SSH hardening (/etc/ssh/sshd_config.d/10-hardening.conf)
+# Password login dimatikan - akses root hanya via SSH key.
+# Darurat LXC: Shell Proxmox → pct enter <id> | Darurat pve: Shell di Web UI
+ssh_max_auth_tries: 4
+ssh_login_grace_time: 30

@@ -1,0 +1,11 @@
+---
+# Playbook: buat user, role & API token Terraform di Proxmox
+# Secret token disimpan otomatis ke macOS Keychain (dibaca terraform/tf.sh)
+# Eksekusi: ansible-playbook playbooks/setup-terraform-access.yml
+
+- name: "Akses Terraform di host pve"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  roles:
+    - proxmox_terraform_access

@@ -1,0 +1,98 @@
+---
+# =============================================================================
+# Role Defaults: monitoring
+# Stack: Prometheus + Loki + Tempo + Grafana (tanpa ELK / SigNoz - terlalu berat)
+# Target: LXC 106 - BACKUP-AND-MONITORING
+# Estimasi RAM: ~1-1.5GB total stack | Disk: maks ~4-5GB
+# =============================================================================
+
+# Versi image (pin untuk stabilitas)
+grafana_version: "10.4.3"
+prometheus_version: "v2.52.0"
+loki_version: "3.0.0"
+tempo_version: "2.5.0"
+
+# Tracing opsional - matikan jika apps belum di-instrument OpenTelemetry
+monitoring_enable_tracing: true
+# Service graph + RED metrics dari traces (butuh RAM & disk tambahan)
+tempo_metrics_generator_enabled: false
+
+# Port expose di LXC 106
+grafana_port: 3000
+prometheus_port: 9090
+loki_port: 3100
+tempo_port: 3200
+tempo_otlp_grpc_port: 4317
+tempo_otlp_http_port: 4318
+
+# ---------------------------------------------------------------------------
+# Firewall port Docker (chain DOCKER-USER) - UFW tidak bisa memblokir port
+# yang di-publish Docker. Port di bawah DIBLOKIR kecuali dari sumber "from".
+# ---------------------------------------------------------------------------
+monitoring_docker_firewall:
+  - { port: "{{ grafana_port }}", from: "{{ monitoring_lan_cidr }}", name: "Grafana" }
+  # Loki: push log dari Alloy di semua host inventory (LXC + pve), bukan seluruh LAN
+  - port: "{{ loki_port }}"
+    from: "{{ (groups['all_lxc'] + groups['proxmox'] | default([])) | map('extract', hostvars, 'ansible_host') | reject('equalto', monitoring_host) | list }}"
+    name: "Loki push (Alloy semua host)"
+  - { port: "{{ prometheus_port }}", from: "{{ app_engine_host }}", name: "Prometheus remote write (Alloy)" }
+  - { port: "{{ tempo_otlp_grpc_port }}", from: "{{ app_engine_host }}", name: "Tempo OTLP (Alloy)" }
+
+# Dashboard yang di-provision (roles/monitoring/files/dashboards/*.json)
+# Default landing page setelah login
+grafana_home_dashboard_uid: "homelab-overview"
+
+# Grafana login (password WAJIB di secrets.yml: grafana_admin_password)
+grafana_admin_user: "admin"
+
+# Jaringan yang boleh akses Grafana
+monitoring_lan_cidr: "{{ lan_cidr }}"
+
+# Direktori data (di dalam LXC 106)
+monitoring_base_dir: "/opt/monitoring"
+grafana_data_dir: "/opt/monitoring/grafana-data"
+prometheus_data_dir: "/opt/monitoring/prometheus-data"
+loki_data_dir: "/opt/monitoring/loki-data"
+tempo_data_dir: "/opt/monitoring/tempo-data"
+
+# Retensi data - disk Proxmox hanya 66GB, jaga tetap kecil
+prometheus_scrape_interval: "30s"
+prometheus_retention_time: "15d"
+prometheus_retention_size: "2GB"
+loki_retention_period: "168h"   # 7 hari
+tempo_retention_period: "24h"   # 1 hari
+
+# Resource limits per container
+grafana_memory_limit: "384m"
+prometheus_memory_limit: "512m"
+loki_memory_limit: "384m"
+tempo_memory_limit: "384m"
+
+# ---------------------------------------------------------------------------
+# Uptime check (Blackbox exporter)
+# ---------------------------------------------------------------------------
+blackbox_version: "v0.25.0"
+blackbox_memory_limit: "64m"
+monitoring_http_probes:
+  - { name: "mqr-app", url: "http://{{ app_engine_host }}/" }
+  - { name: "mqr-app-standby", url: "http://{{ app_stanby_host }}/" }
+  - { name: "grafana", url: "http://grafana:3000/api/health" }
+monitoring_tcp_probes:
+  - { name: "postgresql", target: "{{ db_host }}:{{ db_port }}" }
+# Layanan TLS dengan sertifikat CA homelab (validasi + masa berlaku)
+monitoring_tls_probes:
+  - { name: "redis-tls", target: "{{ redis_host }}:{{ redis_port }}" }
+
+# ---------------------------------------------------------------------------
+# Alertmanager - kirim alert via email
+# Aktif otomatis jika alert_email_to & smtp_* diisi di secrets.yml:
+#   alert_email_to, smtp_smarthost (mis. smtp.gmail.com:587),
+#   smtp_from, smtp_username, smtp_password
+# ---------------------------------------------------------------------------
+alertmanager_version: "v0.27.0"
+alertmanager_memory_limit: "64m"
+alertmanager_enabled: "{{ alert_email_to is defined and smtp_password is defined }}"
+
+# Exporter PostgreSQL & Redis: target diambil dari group inventory
+# [postgres_exporter] dan [redis_exporter]
+monitoring_scrape_laravel: false    # endpoint /metrics :9101 di LXC 101

@@ -1,0 +1,21 @@
+# =============================================================================
+# SSH Hardening - Dikelola Ansible (role common)
+# Akses darurat jika terkunci: Shell Proxmox → pct enter <id>
+# =============================================================================
+PermitRootLogin prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PubkeyAuthentication yes
+
+MaxAuthTries {{ ssh_max_auth_tries }}
+LoginGraceTime {{ ssh_login_grace_time }}
+MaxStartups 10:30:60
+
+# Putus sesi idle yang mati (5 menit x 2)
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+X11Forwarding no
+PermitUserEnvironment no
+LogLevel VERBOSE

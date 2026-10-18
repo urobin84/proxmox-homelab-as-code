@@ -1,0 +1,6 @@
+---
+# LXC 102 - DRC-APP-STANBY (warm standby aplikasi)
+ufw_rules:
+  - { port: "80", from: "{{ lan_cidr }}", comment: "nginx host -> mqr-web-service" }
+  - { port: "443", from: "{{ lan_cidr }}", comment: "nginx host (https)" }
+  - { port: "8080", from: "{{ lan_cidr }}", comment: "mqr-web-service" }

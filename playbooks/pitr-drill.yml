@@ -1,0 +1,177 @@
+---
+# =============================================================================
+# DRILL PITR - buktikan backup bisa dipulihkan ke titik waktu tertentu.
+# Database produksi TIDAK disentuh (hanya tabel uji di database "postgres").
+#
+#   1. Primary : buat tabel uji (N baris) → catat waktu T → DROP tabel
+#                (simulasi kesalahan manusia) → paksa WAL terarsip
+#   2. LXC 106 : restore ke waktu T di direktori terpisah, jalankan di port
+#                5433 (hanya socket lokal), cek tabel ada dengan N baris
+#   3. Bersihkan direktori drill (kecuali -e pitr_keep=true)
+#
+#   ansible-playbook playbooks/pitr-drill.yml
+#
+# Restore PRODUKSI yang sebenarnya (runbook, bukan drill):
+#   pgbackrest --stanza=main --type=time --target="YYYY-MM-DD HH:MM:SS+07" \
+#     --target-action=promote --delta restore   (di host DB, PostgreSQL dihentikan)
+# =============================================================================
+
+- name: "Drill PITR | buat kejadian di primary"
+  hosts: database
+  become: yes
+  gather_facts: no
+  vars:
+    drill_rows: 500
+  tasks:
+    - name: Isi tabel uji, catat waktu T, lalu DROP (simulasi kecelakaan)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        q() { runuser -u postgres -- psql -tAX -d postgres -v ON_ERROR_STOP=1 -c "$1"; }
+        q "DROP TABLE IF EXISTS _pitr_drill"
+        q "CREATE TABLE _pitr_drill AS SELECT g AS id, now() AS dibuat FROM generate_series(1, {{ drill_rows }}) g"
+        sleep 2
+        target=$(q "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') || '+00'")
+        sleep 2
+        q "DROP TABLE _pitr_drill"
+        wal=$(q "SELECT pg_walfile_name(pg_switch_wal())")
+        echo "TARGET=$target"
+        echo "WAL=$wal"
+      args:
+        executable: /bin/bash
+      register: drill_event
+      changed_when: true
+
+    - name: Tunggu WAL berisi DROP terarsip ke repositori
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAX -c "SELECT coalesce(last_archived_wal, '') >= '{{ drill_event.stdout_lines | select('match', '^WAL=') | first | regex_replace('^WAL=') }}' FROM pg_stat_archiver"
+      register: drill_archived
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: drill_archived.stdout | trim == 't'
+
+    - name: Bagikan waktu target
+      ansible.builtin.add_host:
+        name: drill_ctx
+        target: "{{ drill_event.stdout_lines | select('match', '^TARGET=') | first | regex_replace('^TARGET=') }}"
+        rows: "{{ drill_rows }}"
+
+- name: "Drill PITR | restore ke waktu T di LXC 106"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: no
+  vars:
+    drill_dir: /var/lib/pgbackrest/drill
+    pg_bin: /usr/lib/postgresql/16/bin
+    target: "{{ hostvars['drill_ctx'].target }}"
+  tasks:
+    # Hanya binary - jangan buat & jalankan cluster bawaan paket di LXC 106
+    - name: Jangan buat cluster otomatis saat install PostgreSQL
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql-common/createcluster.conf
+        regexp: '^#?\s*create_main_cluster'
+        line: "create_main_cluster = false"
+        create: yes
+        mode: '0644'
+
+    - name: Install binary PostgreSQL 16 (untuk restore uji)
+      ansible.builtin.apt:
+        name: postgresql-16
+        state: present
+
+    - name: Direktori drill bersih
+      ansible.builtin.shell: |
+        rm -rf {{ drill_dir }}
+        install -d -o pgbackrest -g pgbackrest -m 0700 {{ drill_dir }} {{ drill_dir }}/data {{ drill_dir }}/sock
+
+    # --reset-pg1-host: restore ke disk lokal (bukan ke host DB di config)
+    # --archive-mode=off: hasil restore TIDAK BOLEH mengarsip ke repositori produksi
+    - name: Restore PITR ke waktu T
+      ansible.builtin.command:
+        argv:
+          - pgbackrest
+          - --stanza=main
+          - --reset-pg1-host
+          - "--pg1-path={{ drill_dir }}/data"
+          - --type=time
+          - "--target={{ target }}"
+          - --target-action=promote
+          - --archive-mode=off
+          - restore
+      become_user: pgbackrest
+      register: drill_restore
+
+    # Ubuntu menyimpan postgresql.conf/pg_hba.conf di /etc (tidak ikut backup)
+    - name: Konfigurasi minimal instance uji (hanya socket lokal)
+      ansible.builtin.copy:
+        dest: "{{ drill_dir }}/data/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: pgbackrest
+        group: pgbackrest
+        mode: '0600'
+      loop:
+        - name: postgresql.conf
+          content: |
+            port = 5433
+            listen_addresses = ''
+            unix_socket_directories = '{{ drill_dir }}/sock'
+            shared_buffers = 64MB
+            hba_file = '{{ drill_dir }}/data/pg_hba.conf'
+        - name: pg_hba.conf
+          content: |
+            local all all trust
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Start instance uji (recovery sampai waktu T)
+      ansible.builtin.command:
+        cmd: "{{ pg_bin }}/pg_ctl -D {{ drill_dir }}/data -l {{ drill_dir }}/postgres.log -w -t 180 start"
+      become_user: pgbackrest
+
+    - name: Tunggu recovery selesai & promote
+      ansible.builtin.command:
+        cmd: "psql -h {{ drill_dir }}/sock -p 5433 -U postgres -d postgres -tAX -c 'SELECT pg_is_in_recovery()'"
+      become_user: pgbackrest
+      register: drill_recovery
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: drill_recovery.stdout | trim == 'f'
+
+    - name: Hitung baris tabel uji pada hasil restore
+      ansible.builtin.command:
+        cmd: "psql -h {{ drill_dir }}/sock -p 5433 -U postgres -d postgres -tAX -c 'SELECT count(*) FROM _pitr_drill'"
+      become_user: pgbackrest
+      register: drill_count
+      changed_when: false
+      failed_when: false
+
+    - name: Titik pemulihan
+      ansible.builtin.shell: "grep -E 'recovery stopping|last completed transaction|selected new timeline' {{ drill_dir }}/postgres.log | tail -3"
+      register: drill_log
+      changed_when: false
+
+    - name: Stop instance uji
+      ansible.builtin.command:
+        cmd: "{{ pg_bin }}/pg_ctl -D {{ drill_dir }}/data -m fast stop"
+      become_user: pgbackrest
+
+    - name: Bersihkan direktori drill
+      ansible.builtin.file:
+        path: "{{ drill_dir }}"
+        state: absent
+      when: not pitr_keep | default(false) | bool
+
+    - name: HASIL DRILL PITR
+      ansible.builtin.debug:
+        msg:
+          - "Target waktu        : {{ target }}"
+          - "Baris di hasil restore: {{ drill_count.stdout | default('-') }} (harus {{ hostvars['drill_ctx'].rows }}) {{ drill_count.stderr | default('') }}"
+          - "Log recovery        : {{ drill_log.stdout_lines }}"
+          - "{{ 'LULUS - data dipulihkan ke titik sebelum DROP TABLE' if (drill_count.stdout | trim) == (hostvars['drill_ctx'].rows | string) else 'GAGAL' }}"
+
+    - name: Gagalkan playbook jika drill tidak lulus
+      ansible.builtin.assert:
+        that: (drill_count.stdout | trim) == (hostvars['drill_ctx'].rows | string)
+        fail_msg: "Drill PITR GAGAL - periksa {{ drill_dir }} (jalankan ulang dengan -e pitr_keep=true)"
+        quiet: true

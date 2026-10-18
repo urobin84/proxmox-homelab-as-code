@@ -1,0 +1,48 @@
+# =============================================================================
+# Docker Compose - MQR (LXC 101 - DC-APP-ENGINE)
+# Dikelola Ansible (role app_engine) - edit template di repo, bukan di server
+#   web : nginx container, publish :{{ app_web_port }} (di-proxy nginx host :80)
+#   app : Laravel PHP-FPM, build dari ./app-core (config di app-core/.env)
+# =============================================================================
+
+services:
+  web:
+    image: nginx:alpine
+    container_name: mqr-web-service
+    restart: unless-stopped
+    ports:
+      - "{{ app_web_port }}:80"
+    volumes:
+      - ./default.conf:/etc/nginx/conf.d/default.conf
+      - ./app-core/public:/var/www/html/public
+    networks:
+      - mqr-internal
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: {{ app_web_memory_limit }}
+
+  app:
+    build:
+      context: ./app-core
+      dockerfile: Dockerfile
+    container_name: mqr-app-core
+    restart: unless-stopped
+    volumes:
+      - ./app-core:/var/www/html
+    networks:
+      - mqr-internal
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: {{ app_core_memory_limit }}
+
+networks:
+  mqr-internal:
+    driver: bridge

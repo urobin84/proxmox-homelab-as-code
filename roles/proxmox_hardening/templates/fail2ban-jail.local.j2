@@ -1,0 +1,27 @@
+# =============================================================================
+# fail2ban host pve - Dikelola Ansible (role proxmox_hardening)
+# Cek  : fail2ban-client status sshd | fail2ban-client status proxmox
+# Unban: fail2ban-client set proxmox unbanip <ip>
+# =============================================================================
+[DEFAULT]
+bantime  = {{ pve_fail2ban_bantime }}
+findtime = {{ pve_fail2ban_findtime }}
+maxretry = {{ pve_fail2ban_maxretry }}
+ignoreip = {{ pve_fail2ban_ignoreip }}
+backend  = systemd
+banaction = nftables-multiport
+banaction_allports = nftables-allports
+
+bantime.increment = true
+bantime.maxtime   = 1w
+
+[sshd]
+enabled = true
+mode    = aggressive
+
+# Login gagal di Web UI (https://<pve>:8006)
+[proxmox]
+enabled     = true
+port        = https,http,8006
+filter      = proxmox
+journalmatch = _SYSTEMD_UNIT=pvedaemon.service

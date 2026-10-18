@@ -1,0 +1,6 @@
+---
+# Task di Mac (controller) memakai Python milik Ansible sendiri - punya
+# library cryptography (dibutuhkan community.crypto untuk CA & tanda tangan
+# sertifikat). [all:vars] di inventory.ini menunjuk /usr/bin/python3 (Xcode)
+# yang tidak punya library tersebut.
+ansible_python_interpreter: "{{ ansible_playbook_python }}"

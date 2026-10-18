@@ -1,0 +1,29 @@
+---
+# =============================================================================
+# Role: monitoring_agent - Grafana Alloy di Docker host aplikasi (LXC 101)
+#   - Docker container logs → Loki (LXC 106)
+#   - OTLP traces/metrics/logs dari apps → Tempo/Prometheus/Loki (LXC 106)
+# =============================================================================
+
+- name: Buat direktori Alloy
+  ansible.builtin.file:
+    path: "{{ alloy_base_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Deploy konfigurasi Alloy
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ alloy_base_dir }}/{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - { src: config.alloy.j2, dest: config.alloy }
+    - { src: docker-compose-alloy.yml.j2, dest: docker-compose.yml }
+  notify: Restart Alloy
+
+- name: Jalankan Alloy
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ alloy_base_dir }}"
+  register: alloy_compose_result
+  changed_when: "'Started' in alloy_compose_result.stderr or 'Created' in alloy_compose_result.stderr"

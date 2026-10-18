@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# PLAYBOOK: setup-ssh-keys.yml
+# Tujuan : Distribusi SSH public key ke semua LXC menggunakan password root.
+#          Jalankan ini HANYA SEKALI di awal sebelum playbook lainnya.
+#
+# CATATAN: setelah role common dijalankan, login password DIMATIKAN
+#          (sshd hardening). Untuk LXC baru, pasang key dari Shell Proxmox:
+#            pct exec <id> -- bash -c "mkdir -p /root/.ssh && echo '<pubkey>' >> /root/.ssh/authorized_keys"
+#
+# Prasyarat di Mac admin:
+#   1. Install sshpass: brew install sshpass
+#   2. Generate SSH key jika belum ada:
+#        ssh-keygen -t ed25519 -f ~/.ssh/proxmoxmqr_home -C "ansible@proxmoxmqr-home"
+#   3. Aktifkan ansible_password di inventory.ini (lihat komentar di sana)
+#
+# Cara jalankan:
+#   ansible-playbook playbooks/setup-ssh-keys.yml \
+#     --extra-vars "ssh_root_password=PASSWORD_ROOT_LXC_ANDA"
+# =============================================================================
+
+- name: "Setup SSH Key Authentication ke Semua LXC"
+  hosts: all_lxc
+  gather_facts: false
+  vars:
+    ansible_ssh_extra_args: >-
+      -o StrictHostKeyChecking=no
+      -o PubkeyAuthentication=no
+      -o PasswordAuthentication=yes
+    ansible_password: "{{ ssh_root_password }}"
+    ssh_key_path: "~/.ssh/proxmoxmqr_home"
+
+  tasks:
+    # Pastikan direktori .ssh ada di masing-masing LXC
+    - name: Buat direktori ~/.ssh di node
+      ansible.builtin.raw: "mkdir -p /root/.ssh && chmod 700 /root/.ssh"
+      changed_when: true
+
+    # Baca public key dari Mac admin
+    - name: Baca SSH public key lokal
+      ansible.builtin.set_fact:
+        local_pubkey: "{{ lookup('file', ssh_key_path + '.pub') }}"
+      delegate_to: localhost
+      run_once: true
+
+    # Tambahkan public key ke authorized_keys
+    - name: Salin SSH public key ke node
+      ansible.builtin.raw: |
+        grep -qxF '{{ local_pubkey }}' /root/.ssh/authorized_keys 2>/dev/null \
+          || echo '{{ local_pubkey }}' >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+      changed_when: true
+
+    # Verifikasi dengan koneksi key-based
+    - name: Verifikasi koneksi SSH key-based berhasil
+      ansible.builtin.raw: "echo 'SSH key auth OK di $(hostname)'"
+      vars:
+        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no"
+        ansible_password: ""
+        ansible_ssh_private_key_file: "{{ ssh_key_path }}"
+      register: ssh_test
+      changed_when: false
+
+    - name: Tampilkan hasil verifikasi
+      ansible.builtin.debug:
+        msg: "{{ ssh_test.stdout | trim }}"

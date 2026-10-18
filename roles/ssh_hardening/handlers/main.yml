@@ -1,0 +1,6 @@
+---
+# Ubuntu 24.04 memakai ssh.socket; try-reload aman jika ssh.service tidak aktif
+- name: Reload SSH
+  ansible.builtin.command:
+    cmd: systemctl try-reload-or-restart ssh.service
+  listen: "Reload SSH"

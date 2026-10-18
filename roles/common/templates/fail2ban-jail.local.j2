@@ -1,0 +1,18 @@
+# =============================================================================
+# fail2ban - Dikelola Ansible (role common)
+# Cek: fail2ban-client status sshd | Unban: fail2ban-client set sshd unbanip <ip>
+# =============================================================================
+[DEFAULT]
+bantime  = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+ignoreip = {{ fail2ban_ignoreip }}
+backend  = systemd
+
+# Ban ulang lebih lama untuk pelaku berulang
+bantime.increment = true
+bantime.maxtime   = 1w
+
+[sshd]
+enabled = true
+mode    = aggressive

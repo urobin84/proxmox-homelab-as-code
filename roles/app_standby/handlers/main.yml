@@ -1,0 +1,7 @@
+---
+# Image baru dari primary → container dibuat ulang memakai image tersebut
+- name: Recreate standby stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans --force-recreate
+    chdir: "{{ app_standby_dir }}"
+  listen: "Recreate standby stack"

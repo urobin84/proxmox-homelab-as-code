@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# Role Defaults: postgres_backup - pg_dump harian di LXC database
+# Dump disimpan lokal lalu ikut ter-backup oleh vzdump (02:00) di host pve
+# =============================================================================
+pg_backup_dir: "/var/backups/postgresql"
+pg_backup_schedule: "*-*-* 01:30:00 Asia/Jakarta"   # sebelum vzdump 02:00
+pg_backup_retention_days: 3
+pg_backup_textfile_dir: "/var/lib/prometheus/node-exporter"   # textfile collector node exporter

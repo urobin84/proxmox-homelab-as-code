@@ -1,0 +1,10 @@
+---
+# =============================================================================
+# Role Defaults: homelab_ca - Certificate Authority internal homelab
+# Dijalankan di localhost (Mac). Kunci CA disimpan terenkripsi Ansible Vault.
+# =============================================================================
+homelab_ca_dir: "{{ repo_root }}/pki"
+homelab_ca_key: "{{ homelab_ca_dir }}/ca.key"   # terenkripsi vault
+homelab_ca_cert: "{{ homelab_ca_dir }}/ca.crt"  # publik - disebar ke server
+homelab_ca_common_name: "Homelab MQR Internal CA"
+homelab_ca_days: 3650

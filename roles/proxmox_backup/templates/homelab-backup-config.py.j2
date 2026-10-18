@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# =============================================================================
+# Terapkan konfigurasi backup Proxmox via pvesh (idempotent)
+# Dikelola Ansible (role proxmox_backup) - mencetak CHANGED jika ada perubahan
+# --check: hanya laporkan perubahan, tidak menulis apa pun
+# =============================================================================
+import json
+import subprocess
+import sys
+
+CHECK = "--check" in sys.argv
+
+JOB = json.loads({{ proxmox_backup_job | to_json | to_json }})
+STORAGES = {
+    {{ proxmox_backup_storage | to_json }}: {
+        "is_mountpoint": "yes",
+        "prune-backups": {{ proxmox_backup_prune | to_json }},
+    },
+    # Hanya pengaman mount; storage ini tidak dipakai backup job
+    {{ proxmox_gdrive_storage | to_json }}: {
+        "is_mountpoint": "yes",
+    },
+}
+
+
+def pvesh(*args):
+    if CHECK and args[0] != "get":
+        return None
+    out = subprocess.check_output(["pvesh", *args, "--output-format", "json"], text=True)
+    return json.loads(out) if out.strip() else None
+
+
+def norm(value):
+    """Samakan format nilai dari pvesh (int/str/dict, urutan prune) dengan nilai yang diinginkan."""
+    if isinstance(value, dict):
+        value = ",".join(f"{k}={v}" for k, v in value.items())
+    value = "" if value is None else str(value)
+    if value in ("1", "yes", "true"):
+        return "1"
+    if "=" in value:
+        return ",".join(sorted(value.split(",")))
+    return value
+
+
+def to_args(settings):
+    args = []
+    for key, value in settings.items():
+        args += [f"--{key}", str(value)]
+    return args
+
+
+changed = []
+
+# --- Storage ---------------------------------------------------------------
+for storage, wanted in STORAGES.items():
+    current = pvesh("get", f"/storage/{storage}")
+    diff = {k: v for k, v in wanted.items() if norm(current.get(k)) != norm(v)}
+    if diff:
+        pvesh("set", f"/storage/{storage}", *to_args(diff))
+        changed.append(f"storage {storage}: {', '.join(diff)}")
+
+# --- Backup job ------------------------------------------------------------
+job_id = JOB.pop("id")
+jobs = pvesh("get", "/cluster/backup") or []
+current = next((j for j in jobs if j.get("id") == job_id), None)
+if current is None:
+    pvesh("create", "/cluster/backup", "--id", job_id, *to_args(JOB))
+    changed.append(f"backup job {job_id}: dibuat")
+else:
+    diff = {k: v for k, v in JOB.items() if norm(current.get(k)) != norm(v)}
+    if diff:
+        pvesh("set", f"/cluster/backup/{job_id}", *to_args(diff))
+        changed.append(f"backup job {job_id}: {', '.join(diff)}")
+
+for line in changed:
+    print(f"CHANGED {line}")

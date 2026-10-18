@@ -1,0 +1,62 @@
+---
+# =============================================================================
+# Role: homelab_ca - buat CA internal sekali (idempotent)
+#   pki/ca.key : kunci privat ECDSA P-384, langsung dienkripsi ansible-vault
+#   pki/ca.crt : sertifikat CA self-signed (10 tahun)
+# lookup('file') otomatis mendekripsi pki/ca.key saat dipakai menandatangani.
+# =============================================================================
+- name: Direktori PKI
+  ansible.builtin.file:
+    path: "{{ homelab_ca_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Cek kunci CA
+  ansible.builtin.stat:
+    path: "{{ homelab_ca_key }}"
+  register: ca_key_stat
+
+- name: Buat kunci CA & enkripsi dengan vault
+  when: not ca_key_stat.stat.exists
+  block:
+    - name: Generate kunci privat CA (tidak ditulis ke disk tanpa enkripsi)
+      community.crypto.openssl_privatekey_pipe:
+        type: ECC
+        curve: secp384r1
+      register: ca_key_new
+      no_log: true
+
+    - name: Simpan kunci CA terenkripsi vault
+      ansible.builtin.shell: |
+        set -euo pipefail
+        printf '%s' "$CA_KEY" | ansible-vault encrypt --output "{{ homelab_ca_key }}" -
+        chmod 600 "{{ homelab_ca_key }}"
+      args:
+        executable: /bin/bash
+        chdir: "{{ repo_root }}"
+      environment:
+        CA_KEY: "{{ ca_key_new.privatekey }}"
+      no_log: true
+
+- name: CSR CA
+  community.crypto.openssl_csr_pipe:
+    privatekey_content: "{{ lookup('ansible.builtin.file', homelab_ca_key) }}"
+    common_name: "{{ homelab_ca_common_name }}"
+    basic_constraints: ["CA:TRUE", "pathlen:0"]
+    basic_constraints_critical: true
+    key_usage: [keyCertSign, cRLSign]
+    key_usage_critical: true
+    use_common_name_for_san: false
+  register: ca_csr
+  changed_when: false
+  no_log: true
+
+- name: Sertifikat CA self-signed
+  community.crypto.x509_certificate:
+    path: "{{ homelab_ca_cert }}"
+    csr_content: "{{ ca_csr.csr }}"
+    privatekey_content: "{{ lookup('ansible.builtin.file', homelab_ca_key) }}"
+    provider: selfsigned
+    selfsigned_not_after: "+{{ homelab_ca_days }}d"
+    mode: '0644'
+  no_log: true

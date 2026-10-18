@@ -1,0 +1,173 @@
+---
+# =============================================================================
+# Role: pgbackrest_repo - repository host pgBackRest (LXC 106)
+#   - repositori terenkripsi AES-256 di disk terpisah (/var/lib/pgbackrest)
+#   - jadwal full/diff/verify (systemd timer) + metrics untuk Prometheus
+# Kunci enkripsi HANYA ada di host ini; host database tidak memegangnya.
+# =============================================================================
+
+- name: Install pgBackRest
+  ansible.builtin.apt:
+    name: pgbackrest
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: User pgbackrest
+  ansible.builtin.user:
+    name: "{{ pgbackrest_user }}"
+    system: yes
+    home: "{{ pgbackrest_home }}"
+    create_home: yes
+    shell: /bin/bash
+    generate_ssh_key: yes
+    ssh_key_type: ed25519
+    ssh_key_comment: "{{ pgbackrest_user }}@{{ inventory_hostname }}"
+
+# Paket pgbackrest meng-chown /var/lib/pgbackrest ke postgres:postgres 0750 →
+# user pgbackrest tidak bisa masuk ke repo-nya sendiri. Titik mount (disk 30GB)
+# harus milik pgbackrest.
+- name: Direktori repositori, log & lock
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ pgbackrest_user }}"
+    group: "{{ pgbackrest_user }}"
+    mode: '0750'
+  loop:
+    - "{{ pgbackrest_repo_path | dirname }}"
+    - "{{ pgbackrest_repo_path }}"
+    - /var/spool/pgbackrest   # juga di-chown ke postgres oleh paket; dipakai saat restore/archive-get
+    - /var/log/pgbackrest
+    - /tmp/pgbackrest
+
+- name: Konfigurasi pgBackRest (berisi kunci enkripsi)
+  ansible.builtin.template:
+    src: pgbackrest.conf.j2
+    dest: /etc/pgbackrest.conf
+    owner: root
+    group: "{{ pgbackrest_user }}"
+    mode: '0640'
+  no_log: true
+
+- name: Rotasi log pgBackRest
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/pgbackrest-homelab
+    content: |
+      /var/log/pgbackrest/*.log {
+          weekly
+          rotate 8
+          compress
+          missingok
+          notifempty
+          su {{ pgbackrest_user }} {{ pgbackrest_user }}
+      }
+    mode: '0644'
+
+# ---------------------------------------------------------------------------
+# Jadwal backup & verifikasi
+# ---------------------------------------------------------------------------
+- name: Unit systemd backup pgBackRest
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: '0644'
+  loop:
+    - name: pgbackrest-backup@.service
+      content: |
+        # Dikelola Ansible (role pgbackrest_repo) - instance: full | diff | incr
+        [Unit]
+        Description=pgBackRest backup %i (stanza {{ pgbackrest_stanza }})
+        After=network-online.target
+        RequiresMountsFor={{ pgbackrest_repo_path }}
+
+        [Service]
+        Type=oneshot
+        User={{ pgbackrest_user }}
+        ExecStart=/usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} --type=%i backup
+        ExecStartPost=+/usr/local/sbin/pgbackrest-metrics.sh
+        Nice=10
+        IOSchedulingClass=idle
+    - name: pgbackrest-verify.service
+      content: |
+        # Dikelola Ansible (role pgbackrest_repo) - cek integritas isi repositori
+        [Unit]
+        Description=pgBackRest verify repositori (stanza {{ pgbackrest_stanza }})
+        RequiresMountsFor={{ pgbackrest_repo_path }}
+
+        [Service]
+        Type=oneshot
+        User={{ pgbackrest_user }}
+        ExecStart=/usr/bin/pgbackrest --stanza={{ pgbackrest_stanza }} verify
+        Nice=10
+        IOSchedulingClass=idle
+    - name: pgbackrest-full.timer
+      content: |
+        [Unit]
+        Description=Backup full PITR mingguan
+        [Timer]
+        OnCalendar={{ pgbackrest_full_schedule }}
+        Persistent=true
+        Unit=pgbackrest-backup@full.service
+        [Install]
+        WantedBy=timers.target
+    - name: pgbackrest-diff.timer
+      content: |
+        [Unit]
+        Description=Backup differential PITR harian
+        [Timer]
+        OnCalendar={{ pgbackrest_diff_schedule }}
+        Persistent=true
+        Unit=pgbackrest-backup@diff.service
+        [Install]
+        WantedBy=timers.target
+    - name: pgbackrest-verify.timer
+      content: |
+        [Unit]
+        Description=Verifikasi repositori PITR mingguan
+        [Timer]
+        OnCalendar={{ pgbackrest_verify_schedule }}
+        Persistent=true
+        [Install]
+        WantedBy=timers.target
+    - name: pgbackrest-metrics.service
+      content: |
+        [Unit]
+        Description=Metrics pgBackRest untuk Prometheus
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/pgbackrest-metrics.sh
+    - name: pgbackrest-metrics.timer
+      content: |
+        [Unit]
+        Description=Jadwal metrics pgBackRest
+        [Timer]
+        OnBootSec=2min
+        OnUnitActiveSec=5min
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: pgbr_units
+
+- name: Script metrics pgBackRest
+  ansible.builtin.template:
+    src: pgbackrest-metrics.sh.j2
+    dest: /usr/local/sbin/pgbackrest-metrics.sh
+    mode: '0755'
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: pgbr_units is changed
+
+- name: Aktifkan timer pgBackRest
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+  loop:
+    - pgbackrest-full.timer
+    - pgbackrest-diff.timer
+    - pgbackrest-verify.timer
+    - pgbackrest-metrics.timer

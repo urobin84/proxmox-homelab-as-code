@@ -1,0 +1,154 @@
+---
+# =============================================================================
+# Role: backup_agent - Tasks untuk LXC 106 (BACKUP-AND-MONITORING)
+#
+# CATATAN PENTING - Storage di Proxmox host (pve):
+#   - BackupFolder (pve) → sudah di-mount, TIDAK diubah
+#   - gdrive_backup (pve) → sudah di-mount, TIDAK diubah
+#   Ansible hanya memastikan bind mount path tersedia di dalam LXC 106.
+#   Path bind mount dikonfigurasi manual di Proxmox Web UI atau pve.conf.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Pastikan path bind mount tersedia di dalam LXC
+# (Mount aslinya sudah ada di Proxmox - kita hanya verifikasi)
+# ---------------------------------------------------------------------------
+- name: Cek bind mount BackupFolder tersedia di LXC
+  ansible.builtin.stat:
+    path: "{{ backup_base_dir }}"
+  register: backup_mount_stat
+
+- name: Cek bind mount gdrive_backup tersedia di LXC
+  ansible.builtin.stat:
+    path: "{{ gdrive_mount_path }}"
+  register: gdrive_mount_stat
+
+# Mount belum dikonfigurasi di Proxmox → lewati role ini tanpa menggagalkan
+# site.yml. Contoh setup (di host pve):
+#   pct set 106 -mp0 /path/BackupFolder,mp={{ backup_base_dir }}
+#   pct set 106 -mp1 /path/gdrive_backup,mp={{ gdrive_mount_path }}
+- name: Peringatan - bind mount backup belum tersedia
+  ansible.builtin.debug:
+    msg: >-
+      DILEWATI: {{ backup_base_dir }} ada={{ backup_mount_stat.stat.exists }},
+      {{ gdrive_mount_path }} ada={{ gdrive_mount_stat.stat.exists }}.
+      Konfigurasi bind mount LXC 106 di Proxmox, lalu jalankan ulang.
+  when: not (backup_mount_stat.stat.exists and gdrive_mount_stat.stat.exists)
+
+- name: Hentikan role backup_agent untuk host ini
+  ansible.builtin.meta: end_host
+  when: not (backup_mount_stat.stat.exists and gdrive_mount_stat.stat.exists)
+
+- name: Tampilkan info bind mount
+  ansible.builtin.debug:
+    msg: "Bind mount OK: {{ backup_base_dir }} & {{ gdrive_mount_path }} tersedia di LXC 106"
+
+# ---------------------------------------------------------------------------
+# Buat subdirektori backup di dalam BackupFolder
+# ---------------------------------------------------------------------------
+- name: Buat subdirektori per aplikasi di BackupFolder
+  ansible.builtin.file:
+    path: "{{ backup_base_dir }}/{{ item }}"
+    state: directory
+    mode: '0750'
+  loop:
+    - mqr
+    - dkm
+    - dev
+    - database
+    - configs
+    - logs
+
+# ---------------------------------------------------------------------------
+# Install rclone (untuk backup ke GDrive via remote jika mount tidak cukup)
+# ---------------------------------------------------------------------------
+- name: Download rclone installer
+  ansible.builtin.get_url:
+    url: https://rclone.org/install.sh
+    dest: /tmp/rclone-install.sh
+    mode: '0755'
+
+- name: Install rclone
+  ansible.builtin.command:
+    cmd: bash /tmp/rclone-install.sh
+  args:
+    creates: /usr/bin/rclone
+
+- name: Verifikasi instalasi rclone
+  ansible.builtin.command:
+    cmd: rclone version
+  register: rclone_ver
+  changed_when: false
+
+- name: Tampilkan versi rclone
+  ansible.builtin.debug:
+    msg: "rclone terpasang: {{ rclone_ver.stdout_lines[0] }}"
+
+# ---------------------------------------------------------------------------
+# Konfigurasi rclone (opsional - untuk sync tambahan ke GDrive remote)
+# Token didapatkan dari: rclone config (manual, 1 kali) lalu disimpan di vault
+# ---------------------------------------------------------------------------
+- name: Buat direktori config rclone
+  ansible.builtin.file:
+    path: /root/.config/rclone
+    state: directory
+    mode: '0700'
+
+- name: Deploy rclone.conf dari template (kredensial dari vault)
+  ansible.builtin.template:
+    src: rclone.conf.j2
+    dest: /root/.config/rclone/rclone.conf
+    mode: '0600'
+
+# ---------------------------------------------------------------------------
+# Deploy skrip backup
+# ---------------------------------------------------------------------------
+- name: Deploy skrip backup utama
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: /usr/local/bin/homelab-backup.sh
+    mode: '0750'
+
+- name: Deploy skrip cleanup backup lama
+  ansible.builtin.template:
+    src: backup-cleanup.sh.j2
+    dest: /usr/local/bin/homelab-backup-cleanup.sh
+    mode: '0750'
+
+# ---------------------------------------------------------------------------
+# Jadwalkan Cron Job harian
+# ---------------------------------------------------------------------------
+- name: Tambahkan cron backup harian (jam {{ backup_schedule_hour }}:{{ backup_schedule_minute }})
+  ansible.builtin.cron:
+    name: "homelab-backup-daily"
+    user: root
+    hour: "{{ backup_schedule_hour }}"
+    minute: "{{ backup_schedule_minute }}"
+    job: "/usr/local/bin/homelab-backup.sh >> /var/log/homelab-backup.log 2>&1"
+    state: present
+
+- name: Tambahkan cron cleanup backup lama (jam 03:00)
+  ansible.builtin.cron:
+    name: "homelab-backup-cleanup"
+    user: root
+    hour: "03"
+    minute: "00"
+    job: "/usr/local/bin/homelab-backup-cleanup.sh >> /var/log/homelab-backup-cleanup.log 2>&1"
+    state: present
+
+# ---------------------------------------------------------------------------
+# Setup logrotate untuk log backup
+# ---------------------------------------------------------------------------
+- name: Konfigurasi logrotate untuk log backup
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/homelab-backup
+    content: |
+      /var/log/homelab-backup*.log {
+          daily
+          rotate 14
+          compress
+          missingok
+          notifempty
+          create 0640 root root
+      }
+    mode: '0644'

@@ -1,0 +1,100 @@
+---
+# =============================================================================
+# Role: tls_cert - kunci privat dibuat DI SERVER (tidak pernah keluar),
+# CSR ditandatangani CA homelab di controller, sertifikat & CA dikirim balik.
+# Diperbarui otomatis jika SAN berubah atau sisa masa berlaku < renew_days.
+# =============================================================================
+- name: Library cryptography untuk modul community.crypto
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+
+# 0755: klien lokal lain (mis. exporter) perlu membaca ca.crt; kerahasiaan
+# dijaga oleh mode 0600 pada file kunci privat
+- name: Direktori sertifikat
+  ansible.builtin.file:
+    path: "{{ tls_cert_dir }}"
+    state: directory
+    owner: root
+    group: "{{ tls_cert_group }}"
+    mode: '0755'
+
+- name: Kunci privat server (ECDSA P-256)
+  community.crypto.openssl_privatekey:
+    path: "{{ tls_cert_dir }}/{{ tls_cert_name }}.key"
+    type: ECC
+    curve: secp256r1
+    owner: "{{ tls_cert_owner }}"
+    group: "{{ tls_cert_group }}"
+    mode: '0600'
+
+- name: CA homelab di server
+  ansible.builtin.copy:
+    src: "{{ homelab_ca_dir }}/ca.crt"
+    dest: "{{ tls_cert_dir }}/ca.crt"
+    mode: '0644'
+
+# Trust store sistem: bisa dibaca semua klien lokal (mis. exporter yang tidak
+# punya akses ke direktori layanan seperti /etc/redis milik redis:redis 0750)
+- name: CA homelab di trust store sistem
+  ansible.builtin.copy:
+    src: "{{ homelab_ca_dir }}/ca.crt"
+    dest: /usr/local/share/ca-certificates/homelab-ca.crt
+    mode: '0644'
+  register: ca_trust
+
+- name: Perbarui trust store sistem
+  ansible.builtin.command:
+    cmd: update-ca-certificates
+  when: ca_trust is changed
+
+- name: Cek sertifikat yang ada
+  community.crypto.x509_certificate_info:
+    path: "{{ tls_cert_dir }}/{{ tls_cert_name }}.crt"
+    valid_at:
+      renew: "+{{ tls_cert_renew_days }}d"
+  register: cert_info
+  failed_when: false
+
+- name: Tentukan perlu tanda tangan baru
+  ansible.builtin.set_fact:
+    tls_cert_needs_sign: >-
+      {{ cert_info.failed | default(false)
+         or cert_info.valid_at is not defined
+         or not cert_info.valid_at.renew
+         or (cert_info.subject_alt_name | default([]) | map('regex_replace', '^IP Address:', 'IP:') | sort)
+            != (tls_cert_sans | map('regex_replace', '^IP Address:', 'IP:') | sort)
+         or 'not_after' not in cert_info }}
+
+- name: Tanda tangan sertifikat baru
+  when: tls_cert_needs_sign | bool
+  block:
+    - name: CSR (dibuat di server dari kunci lokal)
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ tls_cert_dir }}/{{ tls_cert_name }}.key"
+        common_name: "{{ inventory_hostname }}"
+        subject_alt_name: "{{ tls_cert_sans }}"
+        key_usage: [digitalSignature, keyAgreement]
+        extended_key_usage: [serverAuth, clientAuth]
+      register: server_csr
+
+    - name: Tanda tangani dengan CA homelab (di controller)
+      community.crypto.x509_certificate_pipe:
+        csr_content: "{{ server_csr.csr }}"
+        provider: ownca
+        ownca_content: "{{ lookup('ansible.builtin.file', homelab_ca_dir ~ '/ca.crt') }}"
+        ownca_privatekey_content: "{{ lookup('ansible.builtin.file', homelab_ca_dir ~ '/ca.key') }}"
+        ownca_not_after: "+{{ tls_cert_days }}d"
+      delegate_to: localhost
+      become: false
+      register: signed_cert
+      no_log: true
+
+    - name: Pasang sertifikat
+      ansible.builtin.copy:
+        content: "{{ signed_cert.certificate }}"
+        dest: "{{ tls_cert_dir }}/{{ tls_cert_name }}.crt"
+        owner: "{{ tls_cert_owner }}"
+        group: "{{ tls_cert_group }}"
+        mode: '0644'
+      register: tls_cert_installed

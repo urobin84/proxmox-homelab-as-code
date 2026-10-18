@@ -1,0 +1,157 @@
+---
+# =============================================================================
+# Role: common - Tasks dasar yang dijalankan di SEMUA LXC (Ubuntu 24.04)
+# Daftar paket & parameter hardening: roles/common/defaults/main.yml
+# =============================================================================
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install paket dasar, tracing jaringan & keamanan
+  ansible.builtin.apt:
+    name: "{{ common_base_packages + common_network_packages + common_security_packages }}"
+    state: present
+
+- name: Set timezone ke Asia/Jakarta
+  community.general.timezone:
+    name: Asia/Jakarta
+
+# ---------------------------------------------------------------------------
+# SSH - key admin + hardening (password login dimatikan)
+# ---------------------------------------------------------------------------
+- name: Tambahkan SSH public key admin
+  ansible.posix.authorized_key:
+    user: root
+    state: present
+    key: "{{ admin_ssh_public_key }}"
+
+- name: SSH hardening
+  ansible.builtin.include_role:
+    name: ssh_hardening
+
+# ---------------------------------------------------------------------------
+# fail2ban - jail sshd via journald
+# ---------------------------------------------------------------------------
+- name: Deploy konfigurasi fail2ban
+  ansible.builtin.template:
+    src: fail2ban-jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    mode: '0644'
+  notify: Restart fail2ban
+
+# Log ban/unban masuk journald → ikut terkirim ke Loki (role log_agent)
+- name: Arahkan log fail2ban ke journald
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/fail2ban.local
+    content: |
+      # Dikelola Ansible
+      [DEFAULT]
+      logtarget = SYSTEMD-JOURNAL
+    mode: '0644'
+  notify: Restart fail2ban
+
+# ignore_errors saat --check: paket belum benar-benar terpasang
+- name: Aktifkan & start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: yes
+    state: started
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# ---------------------------------------------------------------------------
+# Update keamanan otomatis (tanpa auto-reboot)
+# needrestart mode list-only: tidak me-restart service (PostgreSQL, Docker)
+# secara otomatis setelah update - restart dilakukan manual.
+# ---------------------------------------------------------------------------
+- name: Aktifkan unattended-upgrades harian
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      // Dikelola Ansible (role common)
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: '0644'
+
+- name: Konfigurasi unattended-upgrades (security only, tanpa reboot)
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    content: |
+      // Dikelola Ansible (role common)
+      Unattended-Upgrade::Automatic-Reboot "false";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+    mode: '0644'
+
+- name: Aktifkan service unattended-upgrades
+  ansible.builtin.systemd:
+    name: unattended-upgrades
+    enabled: yes
+    state: started
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Konfigurasi needrestart mode list-only
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/90-ansible.conf
+    content: |
+      # Dikelola Ansible (role common)
+      $nrconf{restart} = 'l';
+      $nrconf{kernelhints} = 0;
+    mode: '0644'
+
+# ---------------------------------------------------------------------------
+# Sysctl hardening jaringan
+# ---------------------------------------------------------------------------
+# UFW menerapkan /etc/ufw/sysctl.conf saat enable/reload dan isinya
+# log_martians=0 - samakan dengan hardening agar tidak saling menimpa
+- name: Samakan sysctl bawaan UFW dengan hardening
+  ansible.builtin.lineinfile:
+    path: /etc/ufw/sysctl.conf
+    regexp: "^{{ item | replace('.', '/') }}="
+    line: "{{ item | replace('.', '/') }}={{ common_sysctl_hardening[item] }}"
+  loop:
+    - net.ipv4.conf.all.log_martians
+    - net.ipv4.conf.default.log_martians
+
+- name: Terapkan sysctl hardening jaringan
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-hardening.conf
+    sysctl_set: yes
+    state: present
+  loop: "{{ common_sysctl_hardening | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
+
+# ---------------------------------------------------------------------------
+# Firewall - semua rule dipasang SEBELUM UFW diaktifkan agar SSH tidak putus.
+# Rule umum: group_vars/all/main.yml (ufw_common_rules)
+# Rule per group: group_vars/<group>.yml (ufw_rules)
+# ---------------------------------------------------------------------------
+- name: Konfigurasi UFW - izinkan port yang dipakai
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto | default('tcp') }}"
+    from_ip: "{{ item.from }}"
+    comment: "{{ item.comment | default(omit) }}"
+  loop: "{{ ufw_common_rules + (ufw_rules | default([])) }}"
+  loop_control:
+    label: "{{ item.port }} dari {{ item.from }}"
+
+- name: Konfigurasi UFW - default deny incoming
+  community.general.ufw:
+    default: deny
+    direction: incoming
+
+- name: Konfigurasi UFW - default allow outgoing
+  community.general.ufw:
+    default: allow
+    direction: outgoing
+
+- name: Aktifkan UFW
+  community.general.ufw:
+    state: enabled

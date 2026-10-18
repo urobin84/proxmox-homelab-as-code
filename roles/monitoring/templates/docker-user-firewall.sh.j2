@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# =============================================================================
+# docker-user-firewall.sh - batasi akses ke port yang di-publish Docker
+# Dikelola Ansible (role monitoring) - dijalankan docker-user-firewall.service
+#
+# Port Docker melewati UFW (DNAT → chain FORWARD), jadi aturannya dipasang di
+# chain DOCKER-USER yang dievaluasi Docker sebelum aturannya sendiri.
+# --ctorigdstport = port tujuan asli (port host) sebelum DNAT.
+#
+# Cek : iptables -L DOCKER-USER -nv --line-numbers (kolom pkts = paket yang cocok)
+# Catatan: target LOG tidak dipakai - kernel tidak mencatat log netfilter dari
+#          namespace LXC unprivileged
+# =============================================================================
+set -euo pipefail
+
+EXT_IF="{{ ansible_facts['default_ipv4']['interface'] }}"
+
+apply() {
+    local ipt="$1"
+    $ipt -N DOCKER-USER 2>/dev/null || true
+    $ipt -F DOCKER-USER
+    # Balasan koneksi yang sudah diizinkan
+    $ipt -A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+{% for rule in monitoring_docker_firewall %}
+{%   set sources = [rule.from] if rule.from is string else rule.from %}
+    # {{ rule.name }}: port {{ rule.port }} hanya dari {{ sources | join(', ') }}
+    if [ "$ipt" = iptables ]; then
+{%   for src in sources %}
+        $ipt -A DOCKER-USER -i "$EXT_IF" -p tcp -m conntrack --ctorigdstport {{ rule.port }} -s {{ src }} -j RETURN
+{%   endfor %}
+    fi
+    $ipt -A DOCKER-USER -i "$EXT_IF" -p tcp -m conntrack --ctorigdstport {{ rule.port }} -j DROP
+{% endfor %}
+    $ipt -A DOCKER-USER -j RETURN
+}
+
+apply iptables
+# LAN hanya IPv4 - lewat IPv6 (link-local) semua port di atas diblokir
+apply ip6tables
+echo "DOCKER-USER diterapkan (interface $EXT_IF)"

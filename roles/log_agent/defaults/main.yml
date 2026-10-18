@@ -1,0 +1,19 @@
+---
+# =============================================================================
+# Role Defaults: log_agent - Grafana Alloy native (paket apt) pengirim log
+# sistem (journald + file tertentu) ke Loki di LXC 106.
+# LXC 101 tidak memakai role ini: Alloy-nya berjalan di Docker (monitoring_agent)
+# =============================================================================
+log_agent_memory_max: "256M"
+
+# Loki: dari LXC 106 sendiri lewat localhost, host lain lewat IP LXC 106
+log_agent_loki_url: >-
+  http://{{ 'localhost' if ansible_host == monitoring_host else monitoring_host }}:3100/loki/api/v1/push
+
+# Umur maksimum entri journal yang dibaca saat Alloy pertama kali start
+log_agent_journal_max_age: "12h"
+
+# File log tambahan (selain journald) per host
+log_agent_extra_files: >-
+  {{ [{'path': '/var/log/postgresql/postgresql-*-main.log', 'unit': 'postgresql'}]
+     if inventory_hostname in groups['database'] | default([]) else [] }}

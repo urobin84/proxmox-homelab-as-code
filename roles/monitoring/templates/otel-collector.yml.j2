@@ -1,0 +1,97 @@
+receivers:
+  # Terima traces & metrics dari semua aplikasi via OTel SDK
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+        cors:
+          allowed_origins:
+            - "http://{{ app_engine_host }}"
+            - "https://{{ mqr_domain }}"
+            - "https://{{ dkm_domain }}"
+            - "https://{{ dev_domain }}"
+
+  # Terima metrics Prometheus dari apps (pull)
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector-self'
+          static_configs:
+            - targets: ['localhost:8888']
+
+processors:
+  # Tambah metadata batch (efisiensi jaringan)
+  batch:
+    send_batch_size: 10000
+    timeout: 10s
+    send_batch_max_size: 11000
+
+  # Filter memory - jangan sampai OJK kehabisan RAM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 200             # Maks 200MB RAM untuk collector
+    spike_limit_mib: 50
+
+  # Tambah resource attributes otomatis
+  resourcedetection:
+    detectors: [env, system]
+    timeout: 5s
+
+  # Sampling traces untuk hemat storage (homelab)
+  probabilistic_sampler:
+    sampling_percentage: 100   # 100% di dev, turunkan ke 10-20% di production
+
+exporters:
+  # Kirim traces ke Tempo
+  otlp/tempo:
+    endpoint: "tempo:4317"
+    tls:
+      insecure: true
+
+  # Kirim metrics ke Prometheus (remote write)
+  prometheusremotewrite:
+    endpoint: "http://prometheus:9090/api/v1/write"
+    tls:
+      insecure_skip_verify: true
+
+  # Kirim logs ke Loki
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+    default_labels_enabled:
+      exporter: true
+      job: true
+
+  # Debug output di log collector (nonaktifkan di production)
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+  pprof:
+    endpoint: "0.0.0.0:1777"
+  zpages:
+    endpoint: "0.0.0.0:55679"
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    # Pipeline traces: Apps → OTel Collector → Tempo
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resourcedetection]
+      exporters: [otlp/tempo]
+
+    # Pipeline metrics: Apps → OTel Collector → Prometheus
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, batch, resourcedetection]
+      exporters: [prometheusremotewrite]
+
+    # Pipeline logs: Apps → OTel Collector → Loki
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resourcedetection]
+      exporters: [loki]

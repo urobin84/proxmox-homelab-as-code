@@ -1,0 +1,136 @@
+---
+# =============================================================================
+# MASTER PLAYBOOK - site.yml
+# Eksekusi: ansible-playbook -i inventory.ini site.yml --ask-vault-pass
+# =============================================================================
+
+- name: "Phase 0 - CA internal homelab (di controller)"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  roles:
+    - homelab_ca
+
+- name: "Phase 1 - Common setup semua LXC"
+  hosts: all_lxc
+  become: yes
+  gather_facts: yes
+  roles:
+    - common
+
+- name: "Phase 1b - Akses PostgreSQL hanya dari host aplikasi (LXC 104)"
+  hosts: database
+  become: yes
+  gather_facts: no
+  roles:
+    - postgres_access
+
+- name: "Phase 1c - Replika database DR (LXC 105)"
+  hosts: database_replica
+  become: yes
+  gather_facts: no
+  roles:
+    - postgres_replica
+
+- name: "Phase 1e - Repositori backup PITR / pgBackRest (LXC 106)"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: no
+  roles:
+    - pgbackrest_repo
+
+- name: "Phase 1f - Arsip WAL PITR di host PostgreSQL (LXC 104 & 105)"
+  hosts: "database:database_replica"
+  become: yes
+  gather_facts: no
+  roles:
+    - pgbackrest_db
+
+- name: "Phase 1g - Validasi PITR & backup full pertama"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Validasi & backup awal
+      ansible.builtin.include_role:
+        name: pgbackrest_repo
+        tasks_from: initial-backup
+
+- name: "Phase 1d - Redis cache/session/antrean (LXC 103)"
+  hosts: worker_cache
+  become: yes
+  gather_facts: no
+  roles:
+    - redis_server
+
+- name: "Phase 2 - Deploy App Engine (LXC 101)"
+  hosts: app_engine
+  become: yes
+  gather_facts: yes
+  roles:
+    - app_engine
+
+- name: "Phase 2b - Warm standby aplikasi DRC (LXC 102)"
+  hosts: app_stanby
+  become: yes
+  gather_facts: yes
+  roles:
+    - app_standby
+
+- name: "Phase 3a - Dump PostgreSQL harian (LXC 104)"
+  hosts: database
+  become: yes
+  gather_facts: no
+  roles:
+    - postgres_backup
+
+- name: "Phase 3b - Host pve: hardening, monitoring & backup (vzdump + offsite GDrive)"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  roles:
+    - proxmox_hardening
+    - proxmox_firewall
+    - proxmox_backup
+
+- name: "Phase 4 - Observability Stack Pusat (LXC 106)"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: yes
+  roles:
+    - monitoring
+
+- name: "Phase 5 - Node Exporter semua LXC"
+  hosts: all_lxc
+  become: yes
+  gather_facts: no
+  roles:
+    - node_exporter
+
+- name: "Phase 5b - PostgreSQL Exporter"
+  hosts: postgres_exporter
+  become: yes
+  gather_facts: no
+  roles:
+    - postgres_exporter
+
+- name: "Phase 5c - Redis Exporter"
+  hosts: redis_exporter
+  become: yes
+  gather_facts: no
+  roles:
+    - redis_exporter
+
+- name: "Phase 6 - Grafana Alloy di App Engine (LXC 101)"
+  hosts: app_engine
+  become: yes
+  gather_facts: yes
+  roles:
+    - monitoring_agent
+
+- name: "Phase 7 - Kirim log sistem ke Loki (LXC lain + host pve)"
+  hosts: "all_lxc:proxmox:!app_engine"
+  become: yes
+  gather_facts: no
+  roles:
+    - log_agent

@@ -1,0 +1,69 @@
+# =============================================================================
+# .gitignore - repo ini boleh PUBLIK. Semua file instance (secret, state,
+# identitas perangkat) dikeluarkan; versi *.example disediakan sebagai contoh.
+# =============================================================================
+
+# --- Secret (Ansible Vault) --------------------------------------------------
+# Walau terenkripsi, file vault tidak dipublikasikan (rawan brute-force offline)
+group_vars/all/secrets.yml
+group_vars/all/secrets.yml.*
+*.vault
+.vault_pass
+*.plain
+
+# --- Nilai jaringan instance (IP, hostname perangkat) ------------------------
+# Yang dipublikasikan hanya versi *.example dengan IP contoh (192.168.100.x).
+# Akhiran .example sengaja dipakai: Ansible TIDAK memuat file ini sebagai vars.
+inventory.ini
+group_vars/all/main.yml
+group_vars/all/local.yml
+
+# Pengecualian: contoh selalu di-commit
+!*.example
+!group_vars/all/*.example
+
+# --- PKI: CA internal (kunci terenkripsi vault & sertifikat instance) ---------
+pki/*
+!pki/.gitkeep
+
+# --- Terraform ---------------------------------------------------------------
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfplan
+terraform/crash.log
+# Berisi MAC address & detail perangkat - lihat terraform.tfvars.example
+terraform/terraform.tfvars
+
+# --- Backup otomatis Ansible (backup: yes, failover-db.yml) -------------------
+*~
+*.bak
+*.bak-*
+inventory.ini.bak-*
+
+# --- Kunci SSH & kredensial lain ---------------------------------------------
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+rclone.conf
+
+# --- Log & sisa eksekusi -----------------------------------------------------
+*.log
+*.retry
+/tmp/
+playbooks/.*.yml
+
+# --- OS / editor / Python ----------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+.vscode/
+.idea/
+*.swp
+*.swo
+__pycache__/
+*.pyc
+.venv/

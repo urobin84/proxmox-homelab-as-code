@@ -1,0 +1,57 @@
+---
+# =============================================================================
+# Role: postgres_exporter - Metrics PostgreSQL (koneksi, query, ukuran DB,
+# replikasi, cache hit ratio) → Prometheus di LXC 106
+#
+# Auth: peer via unix socket. OS user "prometheus" (dibuat paket exporter)
+# login sebagai DB role "prometheus" dengan hak pg_monitor (read-only
+# statistik, tidak bisa baca data tabel). Tidak perlu password.
+# RAM: ~15-30MB
+# =============================================================================
+
+- name: Install prometheus-postgres-exporter
+  ansible.builtin.apt:
+    name: prometheus-postgres-exporter
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+# Di replika (read-only) role ini sudah ikut tersalin dari primary → dilewati
+- name: Buat DB role prometheus dengan hak pg_monitor
+  ansible.builtin.shell: |
+    set -e
+    if [ "$(runuser -u postgres -- psql -tAc "SELECT pg_is_in_recovery()")" = "t" ]; then
+      exit 0
+    fi
+    if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'prometheus'" | grep -q 1; then
+      runuser -u postgres -- psql -c "CREATE ROLE prometheus LOGIN"
+      echo CREATED
+    fi
+    runuser -u postgres -- psql -c "GRANT pg_monitor TO prometheus" >/dev/null
+  register: pg_role_result
+  changed_when: "'CREATED' in pg_role_result.stdout"
+
+- name: Konfigurasi koneksi exporter via unix socket
+  ansible.builtin.copy:
+    dest: /etc/default/prometheus-postgres-exporter
+    content: |
+      # Dikelola Ansible (role postgres_exporter)
+      DATA_SOURCE_NAME='user=prometheus host=/run/postgresql dbname=postgres sslmode=disable'
+      # --collector.postmaster: waktu start PostgreSQL (dipakai dashboard Grafana 9628)
+      ARGS='--web.listen-address=:{{ postgres_exporter_port }} --collector.postmaster'
+    mode: '0644'
+  notify: Restart postgres exporter
+
+- name: Aktifkan & start postgres exporter
+  ansible.builtin.systemd:
+    name: prometheus-postgres-exporter
+    enabled: yes
+    state: started
+
+- name: Izinkan Prometheus (LXC 106) scrape postgres exporter
+  community.general.ufw:
+    rule: allow
+    port: "{{ postgres_exporter_port }}"
+    proto: tcp
+    from_ip: "{{ monitoring_host }}"
+    comment: "postgres exporter"   # sama dengan group_vars/database.yml

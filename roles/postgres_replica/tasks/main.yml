@@ -1,0 +1,140 @@
+---
+# =============================================================================
+# Role: postgres_replica - PostgreSQL hot standby (read-only) di DR (LXC 105)
+#   - Salin awal dari primary dengan pg_basebackup lewat TLS (sslmode=require)
+#   - Replikasi terus-menerus lewat replication slot (WAL tidak hilang)
+#   - Hanya listen localhost: peran murni DR, bukan untuk melayani aplikasi
+#
+# PENGAMAN: pg_basebackup (mengosongkan data dir) HANYA dijalankan jika
+# server belum menjadi replika (standby.signal tidak ada) DAN data dir masih
+# cluster kosong bawaan paket (belum pernah dipakai / bukan hasil promote).
+# =============================================================================
+
+- name: Install PostgreSQL (versi sama dengan primary)
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgres_version }}"
+      - postgresql-contrib
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+# Password replikasi untuk walreceiver & pg_basebackup (libpq membaca .pgpass)
+- name: Kredensial replikasi di ~postgres/.pgpass
+  ansible.builtin.copy:
+    dest: /var/lib/postgresql/.pgpass
+    content: "{{ pg_primary_host }}:{{ pg_primary_port }}:replication:{{ pg_replication_user }}:{{ pg_replication_password }}\n"
+    owner: postgres
+    group: postgres
+    mode: '0600'
+  no_log: true
+
+- name: Cek status replika
+  ansible.builtin.stat:
+    path: "{{ pg_replica_data_dir }}/standby.signal"
+  register: standby_signal
+
+# Cluster bawaan paket: hanya database template0/template1/postgres
+- name: Cek apakah data dir masih cluster kosong bawaan paket
+  ansible.builtin.shell: |
+    runuser -u postgres -- psql -tAX -c "SELECT count(*) FROM pg_database WHERE datname NOT IN ('template0','template1','postgres')" 2>/dev/null || echo "tidak-jalan"
+  register: pg_user_dbs
+  changed_when: false
+  when: not standby_signal.stat.exists
+
+- name: Tolak jika server berisi data (bukan replika & bukan cluster kosong)
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} bukan replika tapi berisi database ({{ pg_user_dbs.stdout }}).
+      Kemungkinan sudah dipromosikan menjadi primary - pg_basebackup DIBATALKAN agar data tidak hilang.
+      Untuk menjadikannya replika (setelah failover) gunakan playbooks/rebuild-replica.yml.
+  when:
+    - not standby_signal.stat.exists
+    - pg_user_dbs.stdout | trim not in ['0', 'tidak-jalan']
+    - not pg_replica_reinit | bool
+
+# Pengaman reinit: jangan pernah menimpa primary yang sedang dipakai aplikasi
+- name: Cek apakah PostgreSQL lokal sedang berjalan sebagai primary
+  ansible.builtin.shell: |
+    runuser -u postgres -- psql -tAX -c "SELECT NOT pg_is_in_recovery()" 2>/dev/null || echo "tidak-jalan"
+  register: pg_local_primary
+  changed_when: false
+  when: pg_replica_reinit | bool
+
+- name: Tolak reinit pada primary aktif
+  ansible.builtin.fail:
+    msg: >-
+      {{ inventory_hostname }} ({{ ansible_host }}) adalah db_host (primary aktif) atau
+      PostgreSQL-nya masih berjalan sebagai primary (menerima tulisan). Reinit DIBATALKAN.
+      Hentikan dulu lewat failover-db.yml (fencing).
+  when:
+    - pg_replica_reinit | bool
+    - ansible_host == db_host or pg_local_primary.stdout | trim == 't'
+
+- name: Inisialisasi replika dari primary (pg_basebackup)
+  when: not standby_signal.stat.exists or pg_replica_reinit | bool
+  block:
+    - name: Stop PostgreSQL lokal
+      ansible.builtin.systemd:
+        name: "postgresql@{{ pg_replica_cluster }}"
+        state: stopped
+
+    - name: Kosongkan data dir cluster bawaan paket
+      ansible.builtin.shell: "find {{ pg_replica_data_dir }} -mindepth 1 -delete"
+
+    # -R: tulis standby.signal + primary_conninfo; -S: pakai replication slot
+    - name: Salin data dari primary lewat TLS
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - postgres
+          - --
+          - pg_basebackup
+          - -d
+          - "host={{ pg_primary_host }} port={{ pg_primary_port }} user={{ pg_replication_user }} sslmode=require application_name={{ inventory_hostname }}"
+          - -D
+          - "{{ pg_replica_data_dir }}"
+          - -X
+          - stream
+          - -S
+          - "{{ pg_replication_slot }}"
+          - -R
+          - --checkpoint=fast
+          - -P
+
+- name: Konfigurasi hot standby
+  ansible.builtin.copy:
+    dest: "/etc/postgresql/{{ postgres_version }}/main/conf.d/80-ansible-replica.conf"
+    content: |
+      # Dikelola Ansible (role postgres_replica)
+      listen_addresses = 'localhost'
+      hot_standby = on
+      hot_standby_feedback = on
+      log_line_prefix = '%m [%p] %q%u@%d from %h '
+    owner: postgres
+    group: postgres
+    mode: '0644'
+  notify: Restart PostgreSQL replica
+
+- name: Aktifkan & start PostgreSQL replika
+  ansible.builtin.systemd:
+    name: "postgresql@{{ pg_replica_cluster }}"
+    enabled: yes
+    state: started
+
+- name: Terapkan konfigurasi sekarang
+  ansible.builtin.meta: flush_handlers
+
+- name: Pastikan server berjalan sebagai replika & menerima WAL
+  ansible.builtin.shell: |
+    runuser -u postgres -- psql -tAX -c "SELECT pg_is_in_recovery(), status FROM pg_stat_wal_receiver"
+  register: replica_status
+  changed_when: false
+  retries: 10
+  delay: 3
+  until: replica_status.stdout is search('^t\|streaming')
+
+- name: Status replika
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }}: in_recovery|status = {{ replica_status.stdout }}"

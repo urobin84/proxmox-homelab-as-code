@@ -1,0 +1,14 @@
+---
+# Playbook: mikrosegmentasi firewall Proxmox untuk semua LXC
+#   Lihat diff saja      : ansible-playbook playbooks/deploy-firewall.yml --check
+#   Rollout bertahap     : ... -e '{"pve_fw_enable_vmids": ["102"]}'
+#   Semua LXC            : ansible-playbook playbooks/deploy-firewall.yml
+#   ROLLBACK darurat     : ansible-playbook playbooks/deploy-firewall.yml -e pve_fw_enabled=false
+#   (atau di Shell pve   : pct set <id> --net0 "<net0 tanpa firewall=1>")
+
+- name: "Firewall Proxmox - mikrosegmentasi LXC"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  roles:
+    - proxmox_firewall

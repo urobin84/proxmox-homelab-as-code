@@ -1,0 +1,29 @@
+---
+# Playbook: PITR (pgBackRest) saja - repositori di LXC 106, arsip WAL di
+# LXC 104 & 105, validasi & backup full pertama.
+# PERHATIAN: aktivasi pertama me-RESTART PostgreSQL (archive_mode) ±2-3 detik.
+# Eksekusi: ansible-playbook playbooks/deploy-pitr.yml
+
+- name: "Repositori backup PITR (LXC 106)"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: no
+  roles:
+    - pgbackrest_repo
+
+- name: "Arsip WAL di host PostgreSQL"
+  hosts: "database:database_replica"
+  become: yes
+  gather_facts: no
+  roles:
+    - pgbackrest_db
+
+- name: "Validasi PITR & backup full pertama"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Validasi & backup awal
+      ansible.builtin.include_role:
+        name: pgbackrest_repo
+        tasks_from: initial-backup

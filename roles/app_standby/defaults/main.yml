@@ -1,0 +1,18 @@
+---
+# =============================================================================
+# Role Defaults: app_standby - warm standby aplikasi di DRC (LXC 102)
+# Sumber: host pertama group app_engine (LXC 101)
+# =============================================================================
+app_standby_source: "{{ groups['app_engine'][0] }}"
+app_standby_dir: "/opt/microservices"
+app_standby_image: "microservices-app:latest"
+
+# Tidak disinkronkan: log & cache runtime milik masing-masing host, serta file
+# backup Ansible "*~" (nama unik per host & berisi salinan .env)
+app_standby_excludes:
+  - "app-core/storage/logs/*"
+  - "app-core/storage/framework/cache/data/*"
+  - "app-core/storage/framework/views/*"
+  - "*~"
+
+app_standby_ssh_key: "{{ ansible_ssh_private_key_file | default('~/.ssh/id_rsa') }}"

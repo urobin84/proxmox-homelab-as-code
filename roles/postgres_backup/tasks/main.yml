@@ -1,0 +1,64 @@
+---
+# =============================================================================
+# Role: postgres_backup - pg_dump harian (format custom, per database)
+# =============================================================================
+
+- name: Buat direktori dump
+  ansible.builtin.file:
+    path: "{{ pg_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Deploy script pg-backup
+  ansible.builtin.template:
+    src: pg-backup.sh.j2
+    dest: /usr/local/sbin/pg-backup.sh
+    mode: '0700'
+
+- name: Deploy systemd service & timer pg-backup
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: '0644'
+  loop:
+    - name: pg-backup.service
+      content: |
+        # Dikelola Ansible (role postgres_backup)
+        [Unit]
+        Description=Dump logis PostgreSQL
+        After=postgresql.service
+        Requires=postgresql.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/pg-backup.sh
+        Nice=10
+        IOSchedulingClass=idle
+    - name: pg-backup.timer
+      content: |
+        # Dikelola Ansible (role postgres_backup)
+        [Unit]
+        Description=Jadwal dump PostgreSQL harian
+
+        [Timer]
+        OnCalendar={{ pg_backup_schedule }}
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: pg_backup_units
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: pg_backup_units is changed
+
+- name: Aktifkan timer pg-backup
+  ansible.builtin.systemd:
+    name: pg-backup.timer
+    enabled: yes
+    state: started

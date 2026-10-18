@@ -1,0 +1,32 @@
+# =============================================================================
+# Docker Compose - Grafana Alloy ({{ inventory_hostname }})
+# UI debug: http://127.0.0.1:12345 (via SSH tunnel)
+# =============================================================================
+
+volumes:
+  alloy_data:
+
+services:
+  alloy:
+    image: grafana/alloy:{{ alloy_version }}
+    container_name: alloy
+    restart: unless-stopped
+    mem_limit: {{ alloy_memory_limit }}
+    command:
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "--disable-reporting"
+      - "/etc/alloy/config.alloy"
+    ports:
+      - "{{ alloy_otlp_grpc_port }}:4317"
+      - "{{ alloy_otlp_http_port }}:4318"
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+      # journald host (log sistem: sshd, fail2ban, systemd, dll)
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro

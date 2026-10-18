@@ -1,0 +1,73 @@
+---
+# =============================================================================
+# Role: docker - Install Docker Engine (dipakai app_engine, monitoring, dll)
+# CATATAN: LXC harus punya features nesting=1,keyctl=1 di Proxmox
+# =============================================================================
+
+- name: Pastikan direktori keyrings ada
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+# Repo mengikuti distro LXC (ubuntu / debian)
+- name: Tambahkan Docker GPG key
+  ansible.builtin.get_url:
+    url: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}/gpg"
+    dest: /etc/apt/keyrings/docker.asc
+    mode: '0644'
+
+- name: Install python3-debian (dibutuhkan deb822_repository)
+  ansible.builtin.apt:
+    name: python3-debian
+    state: present
+
+# Format lama (apt_repository) diganti docker.sources - cegah repo dobel
+- name: Hapus Docker repository format lama
+  ansible.builtin.file:
+    path: /etc/apt/sources.list.d/docker.list
+    state: absent
+
+- name: Tambahkan Docker repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: deb
+    uris: "https://download.docker.com/linux/{{ ansible_facts['distribution'] | lower }}"
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: amd64
+    signed_by: /etc/apt/keyrings/docker.asc
+    state: present
+
+- name: Install Docker Engine & Compose plugin
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+    update_cache: yes
+
+# Tanpa ini log json-file container tumbuh tanpa batas dan menghabiskan disk.
+# Hanya berlaku untuk container yang dibuat ulang setelah perubahan ini.
+- name: Batasi ukuran log container Docker
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "{{ docker_log_max_size }}",
+          "max-file": "{{ docker_log_max_file }}"
+        }
+      }
+    mode: '0644'
+  notify: Restart Docker
+
+- name: Aktifkan & start service Docker
+  ansible.builtin.systemd:
+    name: docker
+    enabled: yes
+    state: started

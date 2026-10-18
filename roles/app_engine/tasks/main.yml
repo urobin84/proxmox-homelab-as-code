@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# Role: app_engine - Stack MQR (Laravel) di LXC 101
+#
+# Dikelola Ansible : docker-compose.yml, default.conf (nginx container),
+#                    site nginx host (port 80 → mqr-web-service :8080)
+# TIDAK disentuh   : app-core/ (kode aplikasi) dan app-core/.env
+# Docker di-install oleh role dependency "docker" (lihat meta/main.yml)
+# Firewall dikelola role common (group_vars/app_engine.yml)
+# =============================================================================
+
+- name: Pastikan kode aplikasi ada di {{ app_engine_dir }}/app-core
+  ansible.builtin.stat:
+    path: "{{ app_engine_dir }}/app-core/Dockerfile"
+  register: app_core_dockerfile
+  failed_when: not app_core_dockerfile.stat.exists
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# Konfigurasi stack Docker (backup otomatis file lama di server)
+# ---------------------------------------------------------------------------
+- name: Deploy konfigurasi stack aplikasi
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ app_engine_dir }}/{{ item.dest }}"
+    mode: '0644'
+    backup: yes
+  loop:
+    - { src: docker-compose.yml.j2, dest: docker-compose.yml }
+    - { src: app-nginx.conf.j2, dest: default.conf }
+  notify: Apply Docker Compose Stack
+
+# ---------------------------------------------------------------------------
+# Nginx host - reverse proxy port 80 → mqr-web-service
+# ---------------------------------------------------------------------------
+- name: Install nginx host
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+
+- name: Deploy site nginx host (proxy ke :{{ app_web_port }})
+  ansible.builtin.template:
+    src: nginx-host-proxy.conf.j2
+    dest: /etc/nginx/sites-available/default
+    mode: '0644'
+    backup: yes
+  notify: Reload Nginx Host
+
+- name: Aktifkan site nginx host
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/default
+    dest: /etc/nginx/sites-enabled/default
+    state: link
+  notify: Reload Nginx Host
+
+# Gagal di sini = config salah; nginx yang berjalan tidak di-reload
+- name: Validasi konfigurasi nginx host
+  ansible.builtin.command:
+    cmd: nginx -t
+  changed_when: false
+
+- name: Aktifkan & start nginx host
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: yes
+    state: started
+
+# ---------------------------------------------------------------------------
+# Jalankan Stack (tidak rebuild image; pakai playbooks/deploy-apps.yml)
+# ---------------------------------------------------------------------------
+- name: Jalankan docker compose stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ app_engine_dir }}"
+  register: compose_result
+  changed_when: "'Started' in compose_result.stderr or 'Created' in compose_result.stderr"

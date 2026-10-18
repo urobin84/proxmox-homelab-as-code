@@ -1,0 +1,33 @@
+---
+# Playbook: Redis (TLS wajib) + exporter + probe sertifikat di monitoring
+# PERHATIAN: aktivasi TLS pertama me-restart Redis & mematikan port tanpa TLS -
+# semua klien harus memakai rediss:// + CA homelab (pki/ca.crt).
+# Eksekusi: ansible-playbook playbooks/deploy-redis.yml
+
+- name: "CA internal homelab"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  roles:
+    - homelab_ca
+
+- name: "Redis TLS (LXC 103)"
+  hosts: worker_cache
+  become: yes
+  gather_facts: no
+  roles:
+    - redis_server
+
+- name: "Redis exporter via TLS"
+  hosts: redis_exporter
+  become: yes
+  gather_facts: no
+  roles:
+    - redis_exporter
+
+- name: "Probe TLS & alert sertifikat (LXC 106)"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: yes
+  roles:
+    - monitoring

@@ -1,0 +1,15 @@
+---
+# =============================================================================
+# Role Defaults: pgbackrest_db - klien pgBackRest di host PostgreSQL
+# (primary & replika - setelah failover peran bertukar, konfigurasi sama)
+# =============================================================================
+pgbackrest_stanza: "main"
+pgbackrest_repo_host: "{{ groups['backup_monitoring'][0] }}"
+pgbackrest_repo_user: "pgbackrest"
+pgbackrest_pg_path: "/var/lib/postgresql/16/main"
+postgres_version: "16"
+
+# RPO PITR: segmen WAL dipaksa diarsip maks tiap 60 detik saat ada aktivitas
+pgbackrest_archive_timeout: 60
+
+pgbackrest_textfile_dir: "/var/lib/prometheus/node-exporter"

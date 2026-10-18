@@ -1,0 +1,40 @@
+# =============================================================================
+# Redis - Dikelola Ansible (role redis_server). Di-include dari redis.conf
+# Berisi password: mode 0640 redis:redis
+# =============================================================================
+
+# Jaringan: hanya localhost + IP LAN host ini (akses dibatasi UFW)
+bind 127.0.0.1 -::1 {{ redis_bind_ip }}
+protected-mode yes
+{% if redis_tls_enabled %}
+
+# TLS WAJIB: port tanpa enkripsi dimatikan total, semua klien lewat TLS
+# Sertifikat ditandatangani CA homelab (role tls_cert)
+port 0
+tls-port {{ redis_port }}
+tls-cert-file {{ redis_tls_dir }}/redis.crt
+tls-key-file {{ redis_tls_dir }}/redis.key
+tls-ca-cert-file {{ redis_tls_dir }}/ca.crt
+tls-auth-clients no
+tls-protocols "TLSv1.2 TLSv1.3"
+tls-prefer-server-ciphers yes
+tls-session-caching yes
+{% else %}
+port {{ redis_port }}
+{% endif %}
+
+# Autentikasi & otorisasi (ACL Redis 7) - menggantikan requirepass
+user default on >{{ redis_password }} ~* &* +@all {% for c in redis_denied_commands %}-{{ c }} {% endfor %}
+
+# Persistensi: AOF (maks kehilangan ~1 detik) + snapshot RDB
+appendonly yes
+appendfsync everysec
+
+# Memori
+maxmemory {{ redis_maxmemory }}
+maxmemory-policy {{ redis_maxmemory_policy }}
+
+# Audit: klien yang lambat / koneksi idle
+slowlog-log-slower-than 10000
+timeout 300
+tcp-keepalive 60

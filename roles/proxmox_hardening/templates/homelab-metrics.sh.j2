@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# =============================================================================
+# homelab-metrics.sh - metrics status backup & storage host pve
+# Ditulis ke textfile collector node exporter → Prometheus (LXC 106)
+# Dikelola Ansible (role proxmox_hardening) - dijalankan homelab-metrics.timer
+# =============================================================================
+set -euo pipefail
+
+OUT="{{ pve_textfile_dir }}/homelab.prom"
+DUMP="{{ proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/dump"
+TMP=$(mktemp "{{ pve_textfile_dir }}/.homelab.prom.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+
+{
+echo "# HELP homelab_vzdump_last_backup_timestamp_seconds Waktu file backup vzdump terbaru per LXC (0 = belum ada)"
+echo "# TYPE homelab_vzdump_last_backup_timestamp_seconds gauge"
+echo "# HELP homelab_vzdump_last_backup_size_bytes Ukuran file backup vzdump terbaru per LXC"
+echo "# TYPE homelab_vzdump_last_backup_size_bytes gauge"
+for id in $(pct list | awk 'NR>1 {print $1}'); do
+    name=$(pct config "$id" | awk '/^hostname:/ {print $2}')
+    newest=$(ls -1t "$DUMP"/vzdump-lxc-"$id"-*.tar.zst 2>/dev/null | head -n1 || true)
+    if [ -n "$newest" ]; then
+        ts=$(stat -c %Y "$newest"); size=$(stat -c %s "$newest")
+    else
+        ts=0; size=0
+    fi
+    echo "homelab_vzdump_last_backup_timestamp_seconds{vmid=\"$id\",guest=\"$name\"} $ts"
+    echo "homelab_vzdump_last_backup_size_bytes{vmid=\"$id\",guest=\"$name\"} $size"
+done
+
+echo "# HELP homelab_offsite_last_success_timestamp_seconds Waktu offsite Google Drive terakhir sukses (0 = belum pernah)"
+echo "# TYPE homelab_offsite_last_success_timestamp_seconds gauge"
+echo "homelab_offsite_last_success_timestamp_seconds $(cat "{{ homelab_state_dir }}/offsite-last-success" 2>/dev/null || echo 0)"
+
+echo "# HELP homelab_offsite_last_failed Status run offsite terakhir (1 = gagal)"
+echo "# TYPE homelab_offsite_last_failed gauge"
+# Belum pernah jalan sejak boot (StartTimestamp 0) dianggap tidak gagal
+result=$(systemctl show homelab-offsite.service -p Result --value 2>/dev/null || echo unknown)
+started=$(systemctl show homelab-offsite.service -p ExecMainStartTimestampMonotonic --value 2>/dev/null || echo 0)
+if [ "$result" = "success" ] || [ "$started" = "0" ]; then
+    echo "homelab_offsite_last_failed 0"
+else
+    echo "homelab_offsite_last_failed 1"
+fi
+
+# Thin pool LVM (disk semua LXC) - tidak terlihat oleh node exporter biasa
+echo "# HELP homelab_lvm_thinpool_used_percent Pemakaian data & metadata thin pool LVM"
+echo "# TYPE homelab_lvm_thinpool_used_percent gauge"
+lvs --noheadings --separator ' ' -o vg_name,lv_name,data_percent,metadata_percent --select 'lv_attr=~^t' 2>/dev/null \
+  | while read -r vg lv data meta; do
+        echo "homelab_lvm_thinpool_used_percent{vg=\"$vg\",lv=\"$lv\",type=\"data\"} ${data:-0}"
+        echo "homelab_lvm_thinpool_used_percent{vg=\"$vg\",lv=\"$lv\",type=\"metadata\"} ${meta:-0}"
+    done
+} > "$TMP"
+
+chmod 0644 "$TMP"
+mv "$TMP" "$OUT"

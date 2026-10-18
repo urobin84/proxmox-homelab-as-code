@@ -1,0 +1,19 @@
+---
+# Playbook: hanya deploy/update konfigurasi backup
+#   - pg_dump harian di LXC 104 (01:30)
+#   - vzdump semua LXC → BackupFolder (02:00) + offsite GDrive (Minggu 05:00)
+# Eksekusi: ansible-playbook playbooks/deploy-backup.yml
+
+- name: "Dump PostgreSQL harian (LXC 104)"
+  hosts: database
+  become: yes
+  gather_facts: no
+  roles:
+    - postgres_backup
+
+- name: "Backup semua LXC dari host pve"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  roles:
+    - proxmox_backup

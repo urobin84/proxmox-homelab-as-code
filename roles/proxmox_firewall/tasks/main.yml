@@ -1,0 +1,59 @@
+---
+# =============================================================================
+# Role: proxmox_firewall - mikrosegmentasi LXC via firewall Proxmox
+#   1. Rekonsiliasi IPSet, security group & aturan LXC (pvesh)
+#   2. Nyalakan flag firewall=1 di net0 LXC (pve_fw_enable_vmids)
+# Firewall di hypervisor: tidak bisa dimatikan dari dalam LXC.
+# =============================================================================
+# Tanpa IP admin, SSH ke semua LXC ikut terblokir (termasuk dari Ansible)
+- name: Pastikan IP admin sudah diisi
+  ansible.builtin.assert:
+    that: pve_fw_admin_ips | length > 0
+    fail_msg: "Isi pve_fw_admin_ips di group_vars/all/local.yml (lihat local.yml.example) - tanpa itu SSH ke semua LXC terkunci."
+    quiet: true
+  when: pve_fw_enabled | bool
+
+- name: Script rekonsiliasi firewall
+  ansible.builtin.template:
+    src: homelab-firewall.py.j2
+    dest: /usr/local/sbin/homelab-firewall.py
+    mode: '0700'
+  register: fw_script
+
+# Saat --check: script tetap dijalankan dalam mode baca-saja (laporkan diff)
+- name: Terapkan IPSet, security group & aturan LXC
+  ansible.builtin.command:
+    cmd: "/usr/local/sbin/homelab-firewall.py {{ '--check' if ansible_check_mode else '' }}"
+  register: fw_apply
+  changed_when: "'CHANGED' in fw_apply.stdout"
+  check_mode: false
+  when: not (ansible_check_mode and fw_script is changed)
+
+- name: Perubahan aturan
+  ansible.builtin.debug:
+    var: fw_apply.stdout_lines
+  when: fw_apply is changed
+
+# Flag firewall=1 di net0: lalu lintas LXC dilewatkan bridge firewall (fwbr)
+# dan aturan di atas mulai berlaku. Hot-apply - koneksi jaringan LXC putus ±1 dtk
+- name: Flag firewall di kartu jaringan LXC
+  ansible.builtin.shell: |
+    set -euo pipefail
+    net=$(pct config {{ item }} | awk '/^net0:/ {print $2}')
+    want={{ '1' if pve_fw_enabled | bool else '0' }}
+    if echo "$net" | grep -q "firewall=$want"; then exit 0; fi
+    new=$(echo "$net" | sed -E 's/,?firewall=[01]//'),firewall=$want
+    pct set {{ item }} --net0 "$new"
+    echo CHANGED
+  args:
+    executable: /bin/bash
+  loop: "{{ pve_fw_enable_vmids if pve_fw_enabled | bool else (pve_fw_containers.keys() | list) }}"
+  register: fw_flag
+  changed_when: "'CHANGED' in fw_flag.stdout"
+
+# pve-firewall mengompilasi aturan per siklus ±10 detik; tanpa jeda ini
+# verifikasi langsung sesudahnya bisa melihat kondisi transisi
+- name: Tunggu siklus pve-firewall menerapkan aturan
+  ansible.builtin.pause:
+    seconds: 15
+  when: fw_flag is changed or fw_apply is changed

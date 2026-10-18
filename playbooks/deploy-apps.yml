@@ -1,0 +1,39 @@
+---
+# Playbook: deploy/update stack MQR di LXC 101 (DC-APP-ENGINE)
+# Terapkan konfigurasi role app_engine, lalu rebuild image mqr-app-core.
+# Kode aplikasi (app-core/) & .env tetap dikelola manual di server.
+# Eksekusi: ansible-playbook playbooks/deploy-apps.yml
+
+- name: "Deploy / Update Stack MQR di LXC 101"
+  hosts: app_engine
+  become: yes
+  gather_facts: yes
+
+  roles:
+    - app_engine
+
+  tasks:
+    - name: Rebuild image & recreate container yang berubah
+      ansible.builtin.command:
+        cmd: docker compose up -d --build --remove-orphans
+        chdir: "{{ app_engine_dir }}"
+      register: deploy_result
+
+    - name: Cek status container
+      ansible.builtin.command:
+        cmd: docker compose ps
+        chdir: "{{ app_engine_dir }}"
+      register: ps_result
+      changed_when: false
+
+    - name: Tampilkan status container
+      ansible.builtin.debug:
+        var: ps_result.stdout_lines
+
+# Standby DRC selalu identik dengan primary setelah setiap deploy
+- name: "Sinkronkan warm standby DRC (LXC 102)"
+  hosts: app_stanby
+  become: yes
+  gather_facts: yes
+  roles:
+    - app_standby

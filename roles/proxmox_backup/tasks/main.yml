@@ -1,0 +1,147 @@
+---
+# =============================================================================
+# Role: proxmox_backup - backup semua LXC dari host pve
+#   - Storage BackupFolder & gdrive_backup: is_mountpoint + retensi
+#   - Backup job vzdump harian → BackupFolder (HDD NTFS)
+#   - Offsite mingguan → Google Drive (rclone remote, bukan via FUSE mount)
+# Storage, mount NTFS & rclone-gdrive.service dibuat manual - tidak diubah.
+# =============================================================================
+
+- name: Pastikan HDD backup ter-mount
+  ansible.builtin.command:
+    cmd: mountpoint -q {{ proxmox_backup_storage_path }}
+  changed_when: false
+
+- name: Pastikan rclone remote Google Drive tersedia
+  ansible.builtin.command:
+    cmd: rclone listremotes
+  register: rclone_remotes
+  changed_when: false
+  failed_when: offsite_base_remote not in rclone_remotes.stdout_lines
+
+# ---------------------------------------------------------------------------
+# rclone crypt - enkripsi backup sebelum keluar dari pve
+# Remote yang sudah ada dengan password BERBEDA tidak akan ditimpa (gagal),
+# karena backup lama hanya bisa didekripsi dengan password lama.
+# ---------------------------------------------------------------------------
+- name: Pastikan password crypt sudah diisi di secrets.yml
+  ansible.builtin.assert:
+    that:
+      - rclone_crypt_password is defined and rclone_crypt_password | length >= 20
+      - rclone_crypt_password2 is defined and rclone_crypt_password2 | length >= 20
+    fail_msg: "Isi rclone_crypt_password & rclone_crypt_password2 (min 20 karakter) di secrets.yml"
+    quiet: true
+
+- name: Konfigurasi rclone crypt remote {{ offsite_crypt_remote_name }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    name='{{ offsite_crypt_remote_name }}'
+    target='{{ offsite_crypt_target }}'
+    if rclone listremotes | grep -qx "${name}:"; then
+      # "rclone config show" menyamarkan password (*** ENCRYPTED ***),
+      # jadi nilai obscured dibaca langsung dari rclone.conf
+      get() {
+        python3 -c 'import configparser,sys; c=configparser.RawConfigParser(); c.read(sys.argv[1]); print(c.get(sys.argv[2], sys.argv[3], fallback=""))' \
+          "$(rclone config file | tail -n1)" "$name" "$1"
+      }
+      if [ "$(get remote)" != "$target" ] \
+         || [ "$(rclone reveal "$(get password)")" != "$CRYPT_PW" ] \
+         || [ "$(rclone reveal "$(get password2)")" != "$CRYPT_PW2" ]; then
+        echo "MISMATCH: remote $name sudah ada dengan target/password berbeda" >&2
+        exit 1
+      fi
+      exit 0
+    fi
+    rclone config create "$name" crypt remote="$target" \
+      password="$CRYPT_PW" password2="$CRYPT_PW2" \
+      filename_encryption=standard directory_name_encryption=true \
+      --obscure >/dev/null
+    echo CHANGED
+  args:
+    executable: /bin/bash
+  environment:
+    CRYPT_PW: "{{ rclone_crypt_password }}"
+    CRYPT_PW2: "{{ rclone_crypt_password2 }}"
+  register: crypt_remote_result
+  changed_when: "'CHANGED' in crypt_remote_result.stdout"
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Storage + backup job (via pvesh)
+# ---------------------------------------------------------------------------
+- name: Deploy script konfigurasi backup Proxmox
+  ansible.builtin.template:
+    src: homelab-backup-config.py.j2
+    dest: /usr/local/sbin/homelab-backup-config.py
+    mode: '0700'
+  register: deploy_backup_script
+
+# Saat --check: script tetap dijalankan dalam mode baca-saja (laporkan diff)
+- name: Terapkan storage & backup job
+  ansible.builtin.command:
+    cmd: "/usr/local/sbin/homelab-backup-config.py {{ '--check' if ansible_check_mode else '' }}"
+  register: backup_config_result
+  changed_when: "'CHANGED' in backup_config_result.stdout"
+  check_mode: false
+  when: not (ansible_check_mode and deploy_backup_script is changed)
+
+- name: Tampilkan perubahan konfigurasi backup
+  ansible.builtin.debug:
+    var: backup_config_result.stdout_lines
+  when: backup_config_result is changed
+
+# ---------------------------------------------------------------------------
+# Offsite mingguan ke Google Drive
+# ---------------------------------------------------------------------------
+- name: Deploy script offsite
+  ansible.builtin.template:
+    src: homelab-offsite.sh.j2
+    dest: /usr/local/sbin/homelab-offsite.sh
+    mode: '0700'
+
+- name: Deploy systemd service & timer offsite
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: '0644'
+  loop:
+    - name: homelab-offsite.service
+      content: |
+        # Dikelola Ansible (role proxmox_backup)
+        [Unit]
+        Description=Salin backup vzdump terbaru ke Google Drive
+        After=network-online.target
+        Wants=network-online.target
+        RequiresMountsFor={{ proxmox_backup_storage_path }}
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/homelab-offsite.sh
+        Nice=10
+        IOSchedulingClass=idle
+    - name: homelab-offsite.timer
+      content: |
+        # Dikelola Ansible (role proxmox_backup)
+        [Unit]
+        Description=Jadwal offsite backup ke Google Drive
+
+        [Timer]
+        OnCalendar={{ offsite_schedule }}
+        Persistent=true
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  register: offsite_units
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: offsite_units is changed
+
+- name: Aktifkan timer offsite
+  ansible.builtin.systemd:
+    name: homelab-offsite.timer
+    enabled: yes
+    state: started

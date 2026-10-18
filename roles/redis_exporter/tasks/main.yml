@@ -1,0 +1,49 @@
+---
+# =============================================================================
+# Role: redis_exporter - Metrics Redis (memory, hit/miss, clients, keys,
+# evictions) → Prometheus di LXC 106
+# Password diambil dari redis_password di secrets.yml
+# RAM: ~10-20MB
+# =============================================================================
+
+- name: Install prometheus-redis-exporter
+  ansible.builtin.apt:
+    name: prometheus-redis-exporter
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Konfigurasi koneksi exporter ke Redis lokal
+  ansible.builtin.copy:
+    dest: /etc/default/prometheus-redis-exporter
+    content: |
+      # Dikelola Ansible (role redis_exporter)
+      {% if redis_tls_enabled | default(true) %}
+      # Redis hanya menerima TLS (role redis_server) - verifikasi dengan CA homelab
+      REDIS_ADDR='rediss://127.0.0.1:{{ redis_port }}'
+      # CA dari trust store sistem (role tls_cert) - /etc/redis tidak bisa dibaca user prometheus
+      ARGS='--web.listen-address=:{{ redis_exporter_port }} --tls-ca-cert-file=/usr/local/share/ca-certificates/homelab-ca.crt'
+      {% else %}
+      REDIS_ADDR='redis://127.0.0.1:{{ redis_port }}'
+      ARGS='--web.listen-address=:{{ redis_exporter_port }}'
+      {% endif %}
+      REDIS_PASSWORD='{{ redis_password }}'
+    owner: root
+    group: prometheus
+    mode: '0640'
+  no_log: true
+  notify: Restart redis exporter
+
+- name: Aktifkan & start redis exporter
+  ansible.builtin.systemd:
+    name: prometheus-redis-exporter
+    enabled: yes
+    state: started
+
+- name: Izinkan Prometheus (LXC 106) scrape redis exporter
+  community.general.ufw:
+    rule: allow
+    port: "{{ redis_exporter_port }}"
+    proto: tcp
+    from_ip: "{{ monitoring_host }}"
+    comment: "redis exporter"

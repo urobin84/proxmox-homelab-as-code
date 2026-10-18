@@ -1,0 +1,35 @@
+// ---------------------------------------------------------------------------
+// LOGS SISTEM: journald (sshd, fail2ban, systemd, kernel, cron, dll) → Loki
+// Label: host (external), unit, level, identifier. Prioritas debug dibuang.
+// ---------------------------------------------------------------------------
+loki.relabel "journal" {
+  forward_to = []
+
+  rule {
+    source_labels = ["__journal_priority"]
+    regex         = "7"
+    action        = "drop"
+  }
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+
+  rule {
+    source_labels = ["__journal_syslog_identifier"]
+    target_label  = "identifier"
+  }
+}
+
+loki.source.journal "system" {
+  max_age       = "{{ log_agent_journal_max_age | default('12h') }}"
+  relabel_rules = loki.relabel.journal.rules
+  labels        = { job = "systemd-journal" }
+  forward_to    = [loki.write.central.receiver]
+}

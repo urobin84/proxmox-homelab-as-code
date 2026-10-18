@@ -1,0 +1,5 @@
+---
+# LXC 104 - DC-DATABASE (PostgreSQL 16)
+# Port 5432 (pg_hba + UFW) dikelola role postgres_access - hanya host aplikasi
+ufw_rules:
+  - { port: "9187", from: "{{ monitoring_host }}", comment: "postgres exporter" }

@@ -1,0 +1,65 @@
+# =============================================================================
+# CONTOH - salin ke terraform.tfvars (diabaikan git) lalu sesuaikan
+# IP & hostname harus sama dengan ../inventory.ini (Ansible)
+# =============================================================================
+
+proxmox_endpoint = "https://192.168.100.10:8006/"
+
+network = {
+  bridge      = "vmbr0"
+  cidr_prefix = 24
+  gateway     = "192.168.100.1"
+}
+
+lxc_defaults = {
+  cores        = 2
+  memory_mb    = 4000
+  swap_mb      = 512
+  disk_gb      = 10
+  datastore    = "local-lvm"
+  nameservers  = ["8.8.8.8", "1.1.1.1"] # dua resolver: tetap jalan jika salah satu down
+  searchdomain = "home.arpa"            # RFC 8375 - domain khusus jaringan rumah
+}
+
+containers = {
+  "101" = {
+    hostname    = "DC-APP-ENGINE"
+    ip          = "192.168.100.101"
+    mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
+    role        = "app-engine"
+  }
+  "102" = {
+    hostname    = "DRC-APP-STANBY"
+    ip          = "192.168.100.102"
+    mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
+    role        = "app-standby"
+  }
+  "103" = {
+    hostname    = "DC-WORKER-OR-REDIS"
+    ip          = "192.168.100.103"
+    mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
+    role        = "worker-cache"
+  }
+  "104" = {
+    hostname    = "DC-DATABASE"
+    ip          = "192.168.100.104"
+    mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
+    role        = "database"
+  }
+  "105" = {
+    hostname    = "DRC-REPLICA-DB"
+    ip          = "192.168.100.105"
+    mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
+    role        = "database-replica"
+  }
+  "106" = {
+    hostname    = "BACKUP-AND-MONITORING"
+    ip          = "192.168.100.106"
+    mac_address = "BC:24:11:XX:XX:XX" # MAC dari: pct config <id> (kosongkan untuk LXC baru)
+    role        = "backup-monitoring"
+    mount_points = [
+      # Repositori pgBackRest (PITR) - terpisah dari disk sistem & data monitoring
+      { path = "/var/lib/pgbackrest", size_gb = 30 },
+    ]
+  }
+}

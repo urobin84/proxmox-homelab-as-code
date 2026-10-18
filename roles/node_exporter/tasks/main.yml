@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# Role: node_exporter - Metrics host (CPU, RAM, disk, network) di SEMUA LXC
+# Pakai paket apt (bukan Docker) agar LXC database tidak perlu Docker.
+# RAM: ~10-20MB
+# =============================================================================
+
+- name: Install prometheus-node-exporter
+  ansible.builtin.apt:
+    name: prometheus-node-exporter
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
+# openipmi ikut terpasang (node-exporter-collectors → ipmitool → openipmi) tapi
+# tidak ada hardware IPMI di LXC → service gagal tiap boot & status "degraded"
+- name: Matikan openipmi (tidak ada IPMI di LXC)
+  ansible.builtin.systemd:
+    name: openipmi.service
+    enabled: no
+    masked: yes
+  register: openipmi_mask
+  failed_when: openipmi_mask is failed and 'Could not find' not in (openipmi_mask.msg | default(''))
+
+- name: Bersihkan status gagal openipmi
+  ansible.builtin.command:
+    cmd: systemctl reset-failed openipmi.service
+  when: openipmi_mask is changed
+  failed_when: false
+
+- name: Aktifkan & start node exporter
+  ansible.builtin.systemd:
+    name: prometheus-node-exporter
+    enabled: yes
+    state: started
+
+- name: Izinkan Prometheus (LXC 106) scrape port 9100
+  community.general.ufw:
+    rule: allow
+    port: "9100"
+    proto: tcp
+    from_ip: "{{ monitoring_host }}"
+    comment: "node exporter"   # sama dengan ufw_common_rules (role common)

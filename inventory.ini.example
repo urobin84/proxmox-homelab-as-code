@@ -1,0 +1,98 @@
+# =============================================================================
+# ANSIBLE INVENTORY - PROXMOX MQR HOME LAB
+# Proxmox Node : pve  (ASUS TUF - Intel i7-8750H, 31.2GB RAM, 66.35GB HD)
+# Host Proxmox : 192.168.100.10
+# Subnet LXC   : 192.168.100.x
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# [all:vars] - Variabel global untuk semua node
+# Autentikasi hanya SSH key: login password dimatikan oleh role ssh_hardening.
+# Key awal untuk LXC baru dipasang dari Shell Proxmox (lihat setup-ssh-keys.yml).
+# ---------------------------------------------------------------------------
+[all:vars]
+ansible_user=root
+ansible_python_interpreter=/usr/bin/python3
+
+ansible_ssh_private_key_file=~/.ssh/proxmoxmqr_home
+
+# ---------------------------------------------------------------------------
+# HOST PROXMOX (pve) - Debian 13, Proxmox VE 9
+# Role: proxmox_hardening, proxmox_firewall, proxmox_backup,
+# proxmox_terraform_access. Bukan bagian all_lxc (firewall host = pve-firewall)
+# ---------------------------------------------------------------------------
+[proxmox]
+pve ansible_host=192.168.100.10
+
+# ---------------------------------------------------------------------------
+# LXC 101 - DC-APP-ENGINE
+# Aplikasi primary: Laravel (PHP-FPM) + Nginx di Docker, Grafana Alloy
+# Nginx host :80 → container web :8080
+# ---------------------------------------------------------------------------
+[app_engine]
+DC-APP-ENGINE ansible_host=192.168.100.101 lxc_id=101
+
+# ---------------------------------------------------------------------------
+# LXC 102 - DRC-APP-STANBY (nama sama dengan hostname Proxmox & Terraform)
+# Warm standby aplikasi - image & kode identik dengan DC-APP-ENGINE
+# ---------------------------------------------------------------------------
+[app_stanby]
+DRC-APP-STANBY ansible_host=192.168.100.102 lxc_id=102
+
+# ---------------------------------------------------------------------------
+# LXC 103 - DC-WORKER-OR-REDIS
+# Redis 7 (TLS wajib, ACL) - cache, session & antrean
+# ---------------------------------------------------------------------------
+[worker_cache]
+DC-WORKER-OR-REDIS ansible_host=192.168.100.103 lxc_id=103
+
+# ---------------------------------------------------------------------------
+# LXC 104 - DC-DATABASE
+# PostgreSQL 16 primary (peran bisa bertukar dengan [database_replica]
+# lewat playbooks/failover-db.yml)
+# ---------------------------------------------------------------------------
+[database]
+DC-DATABASE ansible_host=192.168.100.104 lxc_id=104
+
+# ---------------------------------------------------------------------------
+# LXC 105 - DRC-REPLICA-DB
+# PostgreSQL 16 hot standby / DR (streaming replication TLS dari primary)
+# ---------------------------------------------------------------------------
+[database_replica]
+DRC-REPLICA-DB ansible_host=192.168.100.105 lxc_id=105
+
+# ---------------------------------------------------------------------------
+# LXC 106 - BACKUP-AND-MONITORING
+# Observability (Prometheus, Loki, Tempo, Grafana, Alertmanager) +
+# repositori PITR pgBackRest (disk terpisah). Backup vzdump dari host pve.
+# ---------------------------------------------------------------------------
+[backup_monitoring]
+BACKUP-AND-MONITORING ansible_host=192.168.100.106 lxc_id=106
+
+# ---------------------------------------------------------------------------
+# KELOMPOK LOGIS
+# ---------------------------------------------------------------------------
+[app_stack:children]
+app_engine
+app_stanby
+worker_cache
+database
+database_replica
+
+[infra:children]
+app_stack
+backup_monitoring
+
+[all_lxc:children]
+infra
+
+# ---------------------------------------------------------------------------
+# EXPORTER - host yang dipantau Prometheus (LXC 106)
+# Tambahkan host HANYA jika servicenya (PostgreSQL / Redis) terpasang
+# ---------------------------------------------------------------------------
+[postgres_exporter]
+DC-DATABASE
+DRC-REPLICA-DB
+
+[redis_exporter]
+DC-WORKER-OR-REDIS

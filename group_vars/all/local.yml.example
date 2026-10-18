@@ -1,0 +1,10 @@
+---
+# =============================================================================
+# CONTOH local.yml - nilai khusus perangkat/jaringan Anda (bukan secret, tapi
+# tidak dipublikasikan). Salin ke group_vars/all/local.yml (diabaikan git).
+# =============================================================================
+
+# IP perangkat admin yang boleh SSH ke LXC & membuka Grafana (firewall Proxmox).
+# Buat reservasi DHCP di router agar IP ini tidak berubah.
+pve_fw_admin_ips:
+  - "192.168.100.20"

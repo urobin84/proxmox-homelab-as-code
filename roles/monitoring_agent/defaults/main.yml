@@ -1,0 +1,21 @@
+---
+# =============================================================================
+# Role Defaults: monitoring_agent
+# Grafana Alloy = OpenTelemetry Collector distribution + log shipper
+# Menggantikan Promtail (EOL) dan OTel Collector terpisah → 1 agent saja
+# Target: LXC 101 - DC-APP-ENGINE | RAM: ~100-200MB
+# =============================================================================
+
+alloy_version: "v1.5.1"
+alloy_base_dir: "/opt/monitoring-agent"
+alloy_memory_limit: "256m"
+
+# OTLP receiver untuk OpenTelemetry SDK di aplikasi
+alloy_otlp_grpc_port: 4317
+alloy_otlp_http_port: 4318
+
+# Endpoint pusat di LXC 106 (lihat role monitoring)
+alloy_loki_url: "http://{{ monitoring_host }}:3100/loki/api/v1/push"
+alloy_prometheus_remote_write_url: "http://{{ monitoring_host }}:9090/api/v1/write"
+alloy_tempo_endpoint: "{{ monitoring_host }}:4317"
+alloy_enable_tracing: true

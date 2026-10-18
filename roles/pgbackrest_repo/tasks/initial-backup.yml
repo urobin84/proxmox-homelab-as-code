@@ -1,0 +1,36 @@
+---
+# =============================================================================
+# Validasi end-to-end & backup full pertama (jika repositori masih kosong)
+#   include_role: name=pgbackrest_repo tasks_from=initial-backup
+# =============================================================================
+
+# check: paksa WAL switch di primary lalu tunggu segmennya tiba di repositori
+- name: Validasi arsip WAL end-to-end (pgbackrest check)
+  ansible.builtin.command:
+    cmd: "pgbackrest --stanza={{ pgbackrest_stanza }} check"
+  become_user: "{{ pgbackrest_user }}"
+  changed_when: false
+
+- name: Jumlah backup di repositori
+  ansible.builtin.shell: |
+    pgbackrest --stanza={{ pgbackrest_stanza }} --output=json info | python3 -I -c "import json,sys; print(sum(len(s.get('backup',[])) for s in json.load(sys.stdin)))"
+  become_user: "{{ pgbackrest_user }}"
+  register: pgbr_count
+  changed_when: false
+
+- name: Backup full pertama (diambil dari replika)
+  ansible.builtin.systemd:
+    name: pgbackrest-backup@full.service
+    state: started
+  when: pgbr_count.stdout | trim == '0'
+
+- name: Status repositori
+  ansible.builtin.command:
+    cmd: "pgbackrest --stanza={{ pgbackrest_stanza }} info"
+  become_user: "{{ pgbackrest_user }}"
+  register: pgbr_info
+  changed_when: false
+
+- name: Ringkasan
+  ansible.builtin.debug:
+    var: pgbr_info.stdout_lines

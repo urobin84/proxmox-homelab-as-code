@@ -1,0 +1,62 @@
+---
+# =============================================================================
+# Desired state firewall - diturunkan dari inventory (ikut berubah otomatis
+# saat peran host bertukar, mis. setelah failover-db.yml)
+# =============================================================================
+
+pve_fw_ipsets:
+  hl-admin: "{{ pve_fw_admin_ips }}"
+  hl-lan: ["{{ lan_cidr }}"]
+  hl-monitoring: "{{ groups['backup_monitoring'] | map('extract', hostvars, 'ansible_host') | list }}"
+  hl-apps: "{{ (groups['app_engine'] + groups['app_stanby']) | map('extract', hostvars, 'ansible_host') | list }}"
+  # Pengirim metrics/trace (Alloy container) - sama dengan DOCKER-USER di LXC 106
+  hl-telemetry: "{{ groups['app_engine'] | map('extract', hostvars, 'ansible_host') | list }}"
+  hl-db-clients: "{{ (groups['app_engine'] + groups['app_stanby'] + groups['worker_cache']) | map('extract', hostvars, 'ansible_host') | list }}"
+  hl-dbs: "{{ (groups['database'] + groups['database_replica']) | map('extract', hostvars, 'ansible_host') | list }}"
+  hl-log-shippers: "{{ (groups['all_lxc'] + groups['proxmox']) | map('extract', hostvars, 'ansible_host') | list }}"
+
+pve_fw_groups:
+  # Semua LXC: akses admin & scrape metrics
+  hl-base:
+    - { type: in, action: ACCEPT, macro: SSH, source: "+dc/hl-admin", comment: "SSH admin (Ansible)" }
+    - { type: in, action: ACCEPT, macro: Ping, source: "+dc/hl-admin", comment: "ping admin" }
+    - { type: in, action: ACCEPT, macro: Ping, source: "+dc/hl-monitoring", comment: "ping monitoring" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "9100", source: "+dc/hl-monitoring", comment: "node exporter" }
+  # Aplikasi (DC & DRC)
+  hl-app:
+    - { type: in, action: ACCEPT, proto: tcp, dport: "80,443,8080", source: "+dc/hl-lan", comment: "web pengguna & Cloudflare Tunnel" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "4317,4318", source: "+dc/hl-apps", comment: "OTLP antar host aplikasi" }
+  # Redis
+  hl-cache:
+    - { type: in, action: ACCEPT, proto: tcp, dport: "6379", source: "+dc/hl-apps", comment: "Redis TLS dari aplikasi" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "6379,9121", source: "+dc/hl-monitoring", comment: "probe TLS & redis exporter" }
+  # PostgreSQL primary & replika (simetris - aman saat failover)
+  hl-db:
+    - { type: in, action: ACCEPT, proto: tcp, dport: "5432", source: "+dc/hl-db-clients", comment: "PostgreSQL dari aplikasi & worker" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "5432", source: "+dc/hl-dbs", comment: "replikasi antar DB" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "5432,9187", source: "+dc/hl-monitoring", comment: "probe & postgres exporter" }
+    - { type: in, action: ACCEPT, macro: SSH, source: "+dc/hl-monitoring", comment: "pgBackRest dari repo host" }
+  # Monitoring & repositori backup
+  hl-mon:
+    - { type: in, action: ACCEPT, proto: tcp, dport: "3000", source: "+dc/hl-admin", comment: "Grafana admin" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "3100", source: "+dc/hl-log-shippers", comment: "Loki push dari Alloy" }
+    - { type: in, action: ACCEPT, proto: tcp, dport: "9090,4317", source: "+dc/hl-telemetry", comment: "remote write & OTLP dari Alloy aplikasi" }
+    - { type: in, action: ACCEPT, macro: SSH, source: "+dc/hl-dbs", comment: "pgBackRest archive-push dari DB" }
+
+# Peran tiap LXC → security group
+_tier_groups:
+  app_engine: [hl-base, hl-app]
+  app_stanby: [hl-base, hl-app]
+  worker_cache: [hl-base, hl-cache]
+  database: [hl-base, hl-db]
+  database_replica: [hl-base, hl-db]
+  backup_monitoring: [hl-base, hl-mon]
+
+pve_fw_containers: >-
+  {%- set out = {} -%}
+  {%- for grp, sgs in _tier_groups.items() -%}
+  {%-   for host in groups[grp] | default([]) -%}
+  {%-     set _ = out.update({ hostvars[host].lxc_id | string: sgs }) -%}
+  {%-   endfor -%}
+  {%- endfor -%}
+  {{ out }}

@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# Role Defaults: tls_cert - sertifikat server ditandatangani CA homelab
+# Pakai: include_role name=tls_cert + vars tls_cert_name/dir/owner/sans
+# =============================================================================
+tls_cert_name: "server"
+tls_cert_dir: "/etc/ssl/homelab"
+tls_cert_owner: "root"
+tls_cert_group: "root"
+tls_cert_sans:                      # IP & DNS yang dipakai klien untuk terhubung
+  - "IP:{{ ansible_host }}"
+  - "IP:127.0.0.1"
+  - "DNS:localhost"
+tls_cert_days: 365
+tls_cert_renew_days: 30             # tanda tangan ulang jika sisa < 30 hari
+
+homelab_ca_dir: "{{ repo_root }}/pki"

@@ -1,0 +1,211 @@
+---
+# =============================================================================
+# Role: monitoring - Observability stack pusat di LXC 106
+# Docker di-install oleh role dependency "docker" (lihat meta/main.yml)
+# =============================================================================
+
+- name: Pastikan grafana_admin_password sudah diisi di secrets.yml
+  ansible.builtin.assert:
+    that:
+      - grafana_admin_password is defined
+      - grafana_admin_password | length >= 8
+      - grafana_admin_password != "GANTI_PASSWORD_GRAFANA"
+    fail_msg: "Isi grafana_admin_password (min 8 karakter) di group_vars/all/secrets.yml"
+
+# ---------------------------------------------------------------------------
+# Direktori config & data
+# Owner disesuaikan dengan UID user di dalam masing-masing image
+# ---------------------------------------------------------------------------
+- name: Buat direktori config monitoring
+  ansible.builtin.file:
+    path: "{{ monitoring_base_dir }}/{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - prometheus/rules
+    - loki
+    - tempo
+    - grafana/provisioning/datasources
+    - grafana/provisioning/dashboards
+    - grafana/provisioning/plugins     # kosong - mencegah error "can't read" di log Grafana
+    - grafana/provisioning/notifiers
+    - grafana/provisioning/alerting
+    - grafana/dashboards
+    - blackbox
+    - alertmanager
+
+- name: Buat direktori data dengan owner sesuai container
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.uid }}"
+    group: "{{ item.uid }}"
+    mode: '0750'
+  loop:
+    - { path: "{{ grafana_data_dir }}", uid: 472 }
+    - { path: "{{ prometheus_data_dir }}", uid: 65534 }
+    - { path: "{{ loki_data_dir }}", uid: 10001 }
+    - { path: "{{ tempo_data_dir }}", uid: 10001 }
+
+# ---------------------------------------------------------------------------
+# Deploy konfigurasi (template Jinja2)
+# ---------------------------------------------------------------------------
+- name: Deploy konfigurasi monitoring
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ monitoring_base_dir }}/{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - { src: docker-compose-monitoring.yml.j2, dest: docker-compose.yml }
+    - { src: prometheus.yml.j2, dest: prometheus/prometheus.yml }
+    - { src: prometheus-alerts.yml.j2, dest: prometheus/rules/alerts.yml }
+    - { src: loki.yml.j2, dest: loki/loki.yml }
+    - { src: tempo.yml.j2, dest: tempo/tempo.yml }
+    - { src: grafana-datasources.yml.j2, dest: grafana/provisioning/datasources/datasources.yml }
+    - { src: blackbox.yml.j2, dest: blackbox/blackbox.yml }
+    - { src: grafana-dashboards.yml.j2, dest: grafana/provisioning/dashboards/homelab.yml }
+  notify: Restart Monitoring Stack
+
+# Grafana membaca ulang folder ini tiap 60 detik - tidak perlu restart
+- name: Deploy dashboard Grafana
+  ansible.builtin.copy:
+    src: dashboards/
+    dest: "{{ monitoring_base_dir }}/grafana/dashboards/"
+    mode: '0644'
+
+- name: Hapus dashboard yang sudah tidak ada di repo
+  ansible.builtin.find:
+    paths: "{{ monitoring_base_dir }}/grafana/dashboards"
+    patterns: "*.json"
+  register: deployed_dashboards
+
+- name: Hapus file dashboard usang
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ deployed_dashboards.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when: (item.path | basename) not in (lookup('ansible.builtin.fileglob', role_path ~ '/files/dashboards/*.json', wantlist=True) | map('basename') | list)
+
+# CA homelab untuk validasi sertifikat oleh Blackbox (probe-tls)
+- name: CA homelab untuk Blackbox
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/pki/ca.crt"
+    dest: "{{ monitoring_base_dir }}/blackbox/ca.crt"
+    mode: '0644'
+  notify: Restart Monitoring Stack
+
+# Berisi password SMTP: hanya root & user container (nobody/65534)
+- name: Deploy konfigurasi Alertmanager (email)
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ monitoring_base_dir }}/alertmanager/alertmanager.yml"
+    owner: root
+    group: "65534"
+    mode: '0640'
+  when: alertmanager_enabled | bool
+  notify: Restart Monitoring Stack
+
+# ---------------------------------------------------------------------------
+# Firewall
+# CATATAN: port yang di-publish Docker melewati chain iptables DOCKER,
+# sehingga UFW tidak selalu bisa memblokirnya. Rule ini tetap dipasang
+# sebagai dokumentasi akses yang diharapkan.
+# ---------------------------------------------------------------------------
+# Comment harus sama dengan group_vars/backup_monitoring.yml (role common),
+# jika berbeda kedua role saling menimpa rule di setiap run
+- name: Izinkan akses Grafana dari LAN
+  community.general.ufw:
+    rule: allow
+    port: "{{ grafana_port }}"
+    proto: tcp
+    from_ip: "{{ monitoring_lan_cidr }}"
+    comment: "Grafana"
+
+- name: Izinkan Alloy (LXC 101) push logs, metrics & traces
+  community.general.ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: tcp
+    from_ip: "{{ app_engine_host }}"
+    comment: "{{ item.comment }}"
+  loop:
+    - { port: "{{ loki_port }}", comment: "Loki push dari Alloy" }
+    - { port: "{{ prometheus_port }}", comment: "Prometheus remote write dari Alloy" }
+    - { port: "{{ tempo_otlp_grpc_port }}", comment: "Tempo OTLP dari Alloy" }
+  loop_control:
+    label: "{{ item.port }}"
+
+# ---------------------------------------------------------------------------
+# Firewall port Docker (DOCKER-USER) - yang benar-benar membatasi akses,
+# karena port yang di-publish Docker melewati UFW
+# ---------------------------------------------------------------------------
+- name: Deploy script firewall DOCKER-USER
+  ansible.builtin.template:
+    src: docker-user-firewall.sh.j2
+    dest: /usr/local/sbin/docker-user-firewall.sh
+    mode: '0700'
+  notify: Apply DOCKER-USER firewall
+
+- name: Deploy systemd unit firewall DOCKER-USER
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/docker-user-firewall.service
+    content: |
+      # Dikelola Ansible (role monitoring)
+      [Unit]
+      Description=Batasi akses port Docker (chain DOCKER-USER)
+      After=docker.service
+      PartOf=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/docker-user-firewall.sh
+
+      [Install]
+      WantedBy=multi-user.target docker.service
+    mode: '0644'
+  register: docker_user_unit
+  notify: Apply DOCKER-USER firewall
+
+- name: Reload systemd (firewall DOCKER-USER)
+  ansible.builtin.systemd:
+    daemon_reload: yes
+  when: docker_user_unit is changed
+
+- name: Aktifkan firewall DOCKER-USER
+  ansible.builtin.systemd:
+    name: docker-user-firewall.service
+    enabled: yes
+    state: started
+
+# ---------------------------------------------------------------------------
+# Jalankan Stack
+# ---------------------------------------------------------------------------
+- name: Pull Docker images monitoring
+  ansible.builtin.command:
+    cmd: docker compose pull
+    chdir: "{{ monitoring_base_dir }}"
+  changed_when: false
+
+- name: Jalankan monitoring stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ monitoring_base_dir }}"
+  register: monitoring_compose_result
+  changed_when: "'Started' in monitoring_compose_result.stderr or 'Created' in monitoring_compose_result.stderr"
+
+- name: Tunggu Grafana siap
+  ansible.builtin.uri:
+    url: "http://localhost:{{ grafana_port }}/api/health"
+  register: grafana_health
+  until: grafana_health.status == 200
+  retries: 20
+  delay: 5
+
+- name: Tampilkan URL akses
+  ansible.builtin.debug:
+    msg:
+      - "Grafana    : http://{{ ansible_host }}:{{ grafana_port }} (user: {{ grafana_admin_user }})"
+      - "Prometheus : http://{{ ansible_host }}:{{ prometheus_port }}"

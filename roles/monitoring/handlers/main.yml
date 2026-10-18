@@ -1,0 +1,16 @@
+---
+# =============================================================================
+# Handlers: monitoring role
+# =============================================================================
+
+- name: Restart Monitoring Stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans --force-recreate
+    chdir: "{{ monitoring_base_dir }}"
+  listen: "Restart Monitoring Stack"
+
+- name: Apply DOCKER-USER firewall
+  ansible.builtin.systemd:
+    name: docker-user-firewall.service
+    state: restarted
+  listen: "Apply DOCKER-USER firewall"

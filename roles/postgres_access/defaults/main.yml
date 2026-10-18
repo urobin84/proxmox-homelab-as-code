@@ -1,0 +1,28 @@
+---
+# =============================================================================
+# Role Defaults: postgres_access - siapa yang boleh terhubung & login ke DB
+# =============================================================================
+postgres_version: "16"
+pg_hba_path: "/etc/postgresql/{{ postgres_version }}/main/pg_hba.conf"
+
+# Host aplikasi yang boleh login (pg_hba, /32 per host) & terhubung (UFW)
+pg_app_client_groups: ["app_engine", "app_stanby", "worker_cache"]
+pg_app_databases: ["db_app_mqr"]
+pg_app_users: ["mqr_user"]
+
+# Hanya boleh TCP connect (uptime check Blackbox) - TIDAK diberi izin login
+pg_probe_hosts: ["{{ monitoring_host }}"]
+
+# ---------------------------------------------------------------------------
+# Streaming replication ke DR (LXC 105) - wajib TLS (hostssl)
+# ---------------------------------------------------------------------------
+pg_replication_user: "replicator"
+pg_replica_hosts: "{{ groups['database_replica'] | default([]) }}"
+pg_replication_slot_prefix: "drc_replica_"
+# Batas WAL yang ditahan slot jika replika mati - lindungi disk primary (10GB).
+# Lewat batas ini replika harus di-resync (pg_basebackup ulang).
+pg_max_slot_wal_keep_size: "2GB"
+
+# Rule lama yang terlalu luas - dihapus dari pg_hba & UFW
+pg_hba_legacy_regexp: '^host\s+db_app_mqr\s+mqr_user\s+192\.168\.8\.\d+/24\s'
+pg_ufw_legacy_from: "{{ lan_cidr }}"

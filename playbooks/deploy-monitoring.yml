@@ -1,0 +1,47 @@
+---
+# Playbook: hanya deploy/update observability stack
+# Prometheus + Loki + Tempo + Grafana (LXC 106), node exporter (semua LXC),
+# Grafana Alloy (LXC 101)
+# Eksekusi: ansible-playbook -i inventory.ini playbooks/deploy-monitoring.yml --ask-vault-pass
+
+- name: "Observability Stack Pusat (LXC 106)"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: yes
+  roles:
+    - monitoring
+
+- name: "Node Exporter semua LXC"
+  hosts: all_lxc
+  become: yes
+  gather_facts: no
+  roles:
+    - node_exporter
+
+- name: "PostgreSQL Exporter (group postgres_exporter)"
+  hosts: postgres_exporter
+  become: yes
+  gather_facts: no
+  roles:
+    - postgres_exporter
+
+- name: "Redis Exporter (group redis_exporter)"
+  hosts: redis_exporter
+  become: yes
+  gather_facts: no
+  roles:
+    - redis_exporter
+
+- name: "Grafana Alloy di App Engine (LXC 101)"
+  hosts: app_engine
+  become: yes
+  gather_facts: yes
+  roles:
+    - monitoring_agent
+
+- name: "Kirim log sistem ke Loki (LXC lain + host pve)"
+  hosts: "all_lxc:proxmox:!app_engine"
+  become: yes
+  gather_facts: no
+  roles:
+    - log_agent

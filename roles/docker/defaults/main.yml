@@ -1,0 +1,4 @@
+---
+# Rotasi log container (per container: max-size x max-file)
+docker_log_max_size: "10m"
+docker_log_max_file: "3"

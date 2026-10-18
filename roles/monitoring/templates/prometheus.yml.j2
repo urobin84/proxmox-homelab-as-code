@@ -1,0 +1,157 @@
+# =============================================================================
+# Prometheus Config - Scrape targets semua LXC di homelab
+# Target node exporter dibuat otomatis dari inventory (group all_lxc)
+# =============================================================================
+
+global:
+  scrape_interval: {{ prometheus_scrape_interval }}
+  evaluation_interval: {{ prometheus_scrape_interval }}
+  external_labels:
+    cluster: 'proxmox-homelab'
+    environment: '{{ environment_type }}'
+
+# Rule files untuk alerting (lihat tab Alerts di Prometheus / Grafana)
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+{% if alertmanager_enabled | bool %}
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+{% endif %}
+
+scrape_configs:
+
+  # Prometheus itu sendiri
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ---------------------------------------------------------------------------
+  # Stack monitoring memantau dirinya sendiri (alert InstanceDown jika mati)
+  # ---------------------------------------------------------------------------
+  - job_name: 'monitoring-stack'
+    static_configs:
+      - targets: ['loki:3100']
+        labels: { service: 'loki' }
+      - targets: ['grafana:3000']
+        labels: { service: 'grafana' }
+{% if monitoring_enable_tracing %}
+      - targets: ['tempo:3200']
+        labels: { service: 'tempo' }
+{% endif %}
+{% if alertmanager_enabled | bool %}
+      - targets: ['alertmanager:9093']
+        labels: { service: 'alertmanager' }
+{% endif %}
+
+  # ---------------------------------------------------------------------------
+  # Node exporter - semua LXC + host pve (CPU, RAM, disk, network)
+  # Host pve juga mengirim metrics backup & thin pool (textfile collector)
+  # ---------------------------------------------------------------------------
+  - job_name: 'node'
+    static_configs:
+{% for host in groups['all_lxc'] + groups['proxmox'] | default([]) %}
+      - targets: ['{{ hostvars[host].ansible_host }}:9100']
+        labels:
+          host: '{{ host }}'
+{% if hostvars[host].lxc_id is defined %}
+          lxc: 'lxc-{{ hostvars[host].lxc_id }}'
+{% else %}
+          role: 'proxmox-host'
+{% endif %}
+{% endfor %}
+
+  # ---------------------------------------------------------------------------
+  # Uptime check (Blackbox exporter) - aplikasi & service dari sudut pandang user
+  # ---------------------------------------------------------------------------
+  - job_name: 'probe-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+{% for probe in monitoring_http_probes %}
+      - targets: ['{{ probe.url }}']
+        labels: { probe: '{{ probe.name }}' }
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: 'probe-tls'
+    metrics_path: /probe
+    params:
+      module: [tcp_tls]
+    static_configs:
+{% for probe in monitoring_tls_probes %}
+      - targets: ['{{ probe.target }}']
+        labels: { probe: '{{ probe.name }}' }
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: 'probe-tcp'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+{% for probe in monitoring_tcp_probes %}
+      - targets: ['{{ probe.target }}']
+        labels: { probe: '{{ probe.name }}' }
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+{% if monitoring_scrape_laravel %}
+
+  # Laravel metrics (via spatie/laravel-prometheus atau sejenisnya)
+  - job_name: 'mqr-laravel'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['{{ app_engine_host }}:9101']
+        labels:
+          app: 'MQR'
+          component: 'laravel'
+{% endif %}
+{% if groups['postgres_exporter'] | default([]) %}
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL exporter - host di group [postgres_exporter] (inventory)
+  # ---------------------------------------------------------------------------
+  - job_name: 'postgres'
+    static_configs:
+{% for host in groups['postgres_exporter'] %}
+      - targets: ['{{ hostvars[host].ansible_host }}:9187']
+        labels:
+          host: '{{ host }}'
+          lxc: 'lxc-{{ hostvars[host].lxc_id }}'
+{% endfor %}
+{% endif %}
+{% if groups['redis_exporter'] | default([]) %}
+
+  # ---------------------------------------------------------------------------
+  # Redis exporter - host di group [redis_exporter] (inventory)
+  # ---------------------------------------------------------------------------
+  - job_name: 'redis'
+    static_configs:
+{% for host in groups['redis_exporter'] %}
+      - targets: ['{{ hostvars[host].ansible_host }}:9121']
+        labels:
+          host: '{{ host }}'
+          lxc: 'lxc-{{ hostvars[host].lxc_id }}'
+{% endfor %}
+{% endif %}

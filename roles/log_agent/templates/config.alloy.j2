@@ -1,0 +1,34 @@
+// =============================================================================
+// Grafana Alloy (native) - {{ inventory_hostname }}
+// Dikelola Ansible (role log_agent) - kirim log sistem ke Loki (LXC 106)
+// UI debug: http://127.0.0.1:12345 (via SSH tunnel)
+// =============================================================================
+
+{% include 'journal.alloy.j2' %}
+{% for f in log_agent_extra_files %}
+
+// ---------------------------------------------------------------------------
+// FILE: {{ f.path }}
+// ---------------------------------------------------------------------------
+local.file_match "{{ f.unit }}" {
+  path_targets = [{
+    "__path__" = "{{ f.path }}",
+    "job"      = "{{ f.unit }}",
+    "unit"     = "{{ f.unit }}",
+  }]
+}
+
+loki.source.file "{{ f.unit }}" {
+  targets    = local.file_match.{{ f.unit }}.targets
+  forward_to = [loki.write.central.receiver]
+}
+{% endfor %}
+
+loki.write "central" {
+  endpoint {
+    url = "{{ log_agent_loki_url | trim }}"
+  }
+  external_labels = {
+    host = "{{ inventory_hostname }}",
+  }
+}

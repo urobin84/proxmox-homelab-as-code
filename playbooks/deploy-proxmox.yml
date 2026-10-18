@@ -1,0 +1,11 @@
+---
+# Playbook: hanya host pve - hardening (SSH key-only, fail2ban),
+# node exporter + metrics backup, rule pve-firewall
+# Eksekusi: ansible-playbook playbooks/deploy-proxmox.yml
+
+- name: "Host pve: hardening & monitoring"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  roles:
+    - proxmox_hardening

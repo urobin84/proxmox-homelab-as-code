@@ -1,0 +1,43 @@
+---
+# =============================================================================
+# Tukar peran DB di kode setelah failover: inventory [database] ⇄
+# [database_replica] dan group_vars db_host ⇄ db_replica_host.
+# Dipakai failover-db.yml (langkah 5) & failover-db-finalize.yml.
+# Butuh var: fo_old (primary lama), fo_new (primary baru), repo
+# =============================================================================
+- name: Tukar group [database] dan [database_replica] di inventory.ini
+  ansible.builtin.shell: |
+    set -e
+    cp -p "{{ repo }}/inventory.ini" "{{ repo }}/inventory.ini.bak-failover-$(date +%Y%m%d%H%M%S)"
+    python3 -I - "{{ repo }}/inventory.ini" "{{ fo_old }}" "{{ fo_new }}" <<'PY'
+    import re, sys
+    path, old, new = sys.argv[1:4]
+    s = open(path).read()
+    db = re.search(r"(?m)^\[database\]\n(\S+)(.*)$", s)
+    rep = re.search(r"(?m)^\[database_replica\]\n(\S+)(.*)$", s)
+    if db.group(1) == new and rep.group(1) == old:
+        print("SUDAH")          # sudah ditukar sebelumnya
+        sys.exit(0)
+    assert db.group(1) == old and rep.group(1) == new, "inventory tidak sesuai kondisi failover"
+    old_line, new_line = old + db.group(2), new + rep.group(2)
+    s = s.replace("[database]\n" + old_line, "[database]\n" + new_line, 1)
+    s = s.replace("[database_replica]\n" + new_line, "[database_replica]\n" + old_line, 1)
+    open(path, "w").write(s)
+    print("DITUKAR")
+    PY
+  args:
+    executable: /bin/bash
+  register: swap_inventory
+  changed_when: "'DITUKAR' in swap_inventory.stdout"
+
+- name: Tukar db_host & db_replica_host di group_vars
+  ansible.builtin.replace:
+    path: "{{ repo }}/group_vars/all/main.yml"
+    regexp: '^{{ item.key }}: ".*"'
+    replace: '{{ item.key }}: "{{ item.value }}"'
+    backup: yes
+  loop:
+    - { key: db_host, value: "{{ hostvars[fo_new].ansible_host }}" }
+    - { key: db_replica_host, value: "{{ hostvars[fo_old].ansible_host }}" }
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"

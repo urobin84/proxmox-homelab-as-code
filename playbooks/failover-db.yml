@@ -1,0 +1,341 @@
+---
+# =============================================================================
+# Failover / switchover PostgreSQL: primary (group database) → replika DR
+# (group database_replica). Runbook DR sebagai kode.
+#
+#   Lihat rencana saja (tanpa perubahan):
+#     ansible-playbook playbooks/failover-db.yml -e mode=switchover
+#   Switchover terencana (primary hidup, tanpa kehilangan data):
+#     ansible-playbook playbooks/failover-db.yml -e mode=switchover -e confirm=FAILOVER-DB
+#   Failover darurat (primary mati):
+#     ansible-playbook playbooks/failover-db.yml -e mode=failover -e confirm=FAILOVER-DB
+#
+# Setelahnya: primary lama dijadikan replika baru dengan
+#     ansible-playbook playbooks/rebuild-replica.yml -e confirm=REBUILD-REPLICA
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. PREFLIGHT - kumpulkan kondisi, tolak jika tidak aman
+# -----------------------------------------------------------------------------
+- name: "Failover DB | preflight"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    mode: "failover"
+  tasks:
+    - name: Validasi mode
+      ansible.builtin.assert:
+        that: mode in ['failover', 'switchover']
+        fail_msg: "mode harus failover (primary mati) atau switchover (terencana)"
+        quiet: true
+
+    - name: Tentukan primary lama & primary baru
+      ansible.builtin.set_fact:
+        fo_old: "{{ groups['database'][0] }}"
+        fo_new: "{{ groups['database_replica'][0] }}"
+        fo_mode: "{{ mode }}"
+        fo_confirmed: "{{ (confirm | default('')) == 'FAILOVER-DB' }}"
+      delegate_facts: false
+
+    - name: Bagikan keputusan ke semua play
+      ansible.builtin.add_host:
+        name: fo_ctx
+        fo_old: "{{ fo_old }}"
+        fo_new: "{{ fo_new }}"
+        fo_mode: "{{ fo_mode }}"
+        fo_confirmed: "{{ fo_confirmed }}"
+
+- name: "Failover DB | cek replika (calon primary)"
+  hosts: "{{ groups['database_replica'][0] }}"
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Status replika
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAX -F '|' -c "SELECT pg_is_in_recovery(), pg_last_wal_replay_lsn(), coalesce((SELECT status FROM pg_stat_wal_receiver), 'tidak-terhubung')"
+      register: fo_replica
+      changed_when: false
+
+    - name: Calon primary harus replika yang berjalan
+      ansible.builtin.assert:
+        that: fo_replica.stdout.split('|')[0] == 't'
+        fail_msg: "{{ inventory_hostname }} bukan replika (in_recovery={{ fo_replica.stdout }}). Failover dibatalkan."
+        quiet: true
+
+- name: "Failover DB | cek primary lama"
+  hosts: "{{ groups['database'][0] }}"
+  become: yes
+  gather_facts: no
+  ignore_unreachable: true
+  tasks:
+    - name: Status primary lama
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAX -c "SELECT NOT pg_is_in_recovery()" 2>/dev/null || echo "tidak-jalan"
+      register: fo_primary
+      changed_when: false
+
+- name: "Failover DB | keputusan"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Ringkas kondisi
+      ansible.builtin.set_fact:
+        fo_old: "{{ hostvars['fo_ctx'].fo_old }}"
+        fo_new: "{{ hostvars['fo_ctx'].fo_new }}"
+        fo_mode: "{{ hostvars['fo_ctx'].fo_mode }}"
+        fo_old_reachable: "{{ hostvars[hostvars['fo_ctx'].fo_old].fo_primary is defined and not (hostvars[hostvars['fo_ctx'].fo_old].fo_primary.unreachable | default(false)) }}"
+        fo_old_is_primary: "{{ (hostvars[hostvars['fo_ctx'].fo_old].fo_primary.stdout | default('')) | trim == 't' }}"
+        fo_replica_state: "{{ hostvars[hostvars['fo_ctx'].fo_new].fo_replica.stdout }}"
+
+    - name: Rencana
+      ansible.builtin.debug:
+        msg:
+          - "Mode            : {{ fo_mode }}"
+          - "Primary lama    : {{ fo_old }} ({{ hostvars[fo_old].ansible_host }}) - terjangkau={{ fo_old_reachable }}, primary-aktif={{ fo_old_is_primary }}"
+          - "Primary baru    : {{ fo_new }} ({{ hostvars[fo_new].ansible_host }}) - in_recovery|replay_lsn|wal_receiver = {{ fo_replica_state }}"
+          - "Langkah         : {{ 'stop bersih primary lama → pastikan LSN sama → ' if fo_mode == 'switchover' else 'FENCING primary lama via Proxmox (pct stop, onboot=0) → ' }}promote → buka akses aplikasi → DB_HOST aplikasi → tukar inventory"
+          - "Dampak          : aplikasi tidak bisa menulis ke DB ±30-60 detik"
+
+    # Split-brain: failover saat primary masih hidup = dua primary menerima tulisan
+    - name: Tolak failover jika primary lama masih hidup
+      ansible.builtin.fail:
+        msg: >-
+          Primary lama {{ fo_old }} MASIH HIDUP dan menerima tulisan. Mode failover ditolak
+          untuk mencegah split-brain. Gunakan -e mode=switchover.
+      when: fo_mode == 'failover' and fo_old_is_primary | bool
+
+    - name: Tolak switchover jika primary lama tidak sehat
+      ansible.builtin.fail:
+        msg: "Switchover butuh primary lama hidup sebagai primary. Gunakan -e mode=failover."
+      when: fo_mode == 'switchover' and not fo_old_is_primary | bool
+
+    - name: Berhenti di sini jika belum dikonfirmasi (dry run)
+      ansible.builtin.debug:
+        msg: "DRY RUN - tidak ada perubahan. Jalankan ulang dengan -e confirm=FAILOVER-DB untuk eksekusi."
+      when: not hostvars['fo_ctx'].fo_confirmed | bool
+
+    - name: Akhiri jika dry run
+      ansible.builtin.meta: end_play
+      when: not hostvars['fo_ctx'].fo_confirmed | bool
+
+    - name: Tandai eksekusi
+      ansible.builtin.add_host:
+        name: fo_ctx
+        fo_go: true
+        fo_old_reachable: "{{ fo_old_reachable }}"
+
+# -----------------------------------------------------------------------------
+# 2. FENCING primary lama - pastikan tidak bisa menerima tulisan lagi
+# -----------------------------------------------------------------------------
+- name: "Failover DB | hentikan primary lama"
+  hosts: "{{ groups['database'][0] }}"
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Lewati jika dry run / tidak terjangkau
+      ansible.builtin.meta: end_host
+      when: not hostvars['fo_ctx'].fo_go | default(false) or not hostvars['fo_ctx'].fo_old_reachable | bool
+
+    # Shutdown bersih mengirim seluruh WAL ke replika yang terhubung
+    - name: Stop & nonaktifkan PostgreSQL primary lama
+      ansible.builtin.systemd:
+        name: postgresql@16-main
+        state: stopped
+        enabled: no
+
+    - name: Matikan pg_dump harian di primary lama (pindah ke primary baru)
+      ansible.builtin.systemd:
+        name: pg-backup.timer
+        state: stopped
+        enabled: no
+      failed_when: false
+
+    - name: Posisi WAL terakhir primary lama
+      ansible.builtin.shell: |
+        /usr/lib/postgresql/16/bin/pg_controldata /var/lib/postgresql/16/main | awk -F': *' '/Latest checkpoint location/ {print $2}'
+      register: fo_old_final_lsn
+      changed_when: false
+
+    - name: Simpan posisi WAL
+      ansible.builtin.add_host:
+        name: fo_ctx
+        fo_old_final_lsn: "{{ fo_old_final_lsn.stdout | trim }}"
+
+- name: "Failover DB | fencing via Proxmox"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Lewati jika dry run
+      ansible.builtin.meta: end_play
+      when: not hostvars['fo_ctx'].fo_go | default(false)
+
+    - name: Primary lama tidak boleh start otomatis saat boot
+      ansible.builtin.command:
+        cmd: "pct set {{ hostvars[hostvars['fo_ctx'].fo_old].lxc_id }} --onboot 0"
+
+    # Primary tak terjangkau (hang/jaringan): matikan containernya agar tidak
+    # "hidup kembali" sebagai primary kedua (STONITH)
+    - name: Matikan LXC primary lama (fencing)
+      ansible.builtin.command:
+        cmd: "pct stop {{ hostvars[hostvars['fo_ctx'].fo_old].lxc_id }}"
+      when: not hostvars['fo_ctx'].fo_old_reachable | bool
+      register: fo_pct_stop
+      failed_when: fo_pct_stop.rc != 0 and 'not running' not in fo_pct_stop.stderr
+
+# -----------------------------------------------------------------------------
+# 3. PROMOTE replika menjadi primary
+# -----------------------------------------------------------------------------
+- name: "Failover DB | promote primary baru"
+  hosts: "{{ groups['database_replica'][0] }}"
+  become: yes
+  gather_facts: no
+  vars:
+    fo_old: "{{ hostvars['fo_ctx'].fo_old }}"
+  tasks:
+    - name: Lewati jika dry run
+      ansible.builtin.meta: end_play
+      when: not hostvars['fo_ctx'].fo_go | default(false)
+
+    # Switchover: replika harus sudah menerima WAL sampai checkpoint terakhir
+    - name: Pastikan replika sudah menerima seluruh WAL primary lama (switchover)
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAX -c "SELECT pg_last_wal_receive_lsn() >= '{{ hostvars['fo_ctx'].fo_old_final_lsn }}'::pg_lsn"
+      register: fo_caught_up
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: fo_caught_up.stdout | trim == 't'
+      when: hostvars['fo_ctx'].fo_old_final_lsn is defined
+
+    - name: Promote
+      ansible.builtin.command:
+        cmd: runuser -u postgres -- psql -tAX -c "SELECT pg_promote(wait => true, wait_seconds => 60)"
+      register: fo_promote
+      failed_when: fo_promote.stdout | trim != 't'
+
+    - name: Hapus konfigurasi khusus replika (listen localhost)
+      ansible.builtin.file:
+        path: /etc/postgresql/16/main/conf.d/80-ansible-replica.conf
+        state: absent
+
+    - name: Kredensial replikasi lama tidak dipakai lagi
+      ansible.builtin.file:
+        path: /var/lib/postgresql/.pgpass
+        state: absent
+
+    # pg_hba (aplikasi + replikasi untuk primary lama), UFW, logging, slot
+    - name: Buka akses aplikasi (role postgres_access)
+      ansible.builtin.include_role:
+        name: postgres_access
+      vars:
+        pg_replica_hosts: ["{{ fo_old }}"]
+
+    # listen_addresses butuh restart (reload tidak cukup)
+    - name: Restart PostgreSQL agar listen di LAN
+      ansible.builtin.systemd:
+        name: postgresql@16-main
+        state: restarted
+        enabled: yes
+
+    # Gagal di sini SEBELUM aplikasi dialihkan (drill 2026-10-18: primary baru
+    # hanya listen localhost → aplikasi error 500 ±5 menit)
+    - name: Verifikasi primary baru menerima tulisan & listen di LAN
+      ansible.builtin.shell: |
+        runuser -u postgres -- psql -tAX -c "SELECT NOT pg_is_in_recovery()"
+        ss -tlnH '( sport = :5432 )' | awk '{print $4}' | grep -cvE '^(127\.0\.0\.1|\[::1\]):'
+      register: fo_new_ok
+      changed_when: false
+      failed_when: fo_new_ok.stdout_lines[0] != 't' or (fo_new_ok.stdout_lines[1] | int) == 0
+
+    - name: Verifikasi port 5432 primary baru terjangkau dari host aplikasi
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: 5432
+        timeout: 15
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['app_engine'] + groups['app_stanby'] }}"
+
+    - name: pg_dump harian pindah ke primary baru
+      ansible.builtin.include_role:
+        name: postgres_backup
+
+# -----------------------------------------------------------------------------
+# 4. Arahkan aplikasi ke primary baru
+# -----------------------------------------------------------------------------
+- name: "Failover DB | pindahkan aplikasi"
+  hosts: "app_engine:app_stanby"
+  become: yes
+  gather_facts: no
+  vars:
+    fo_new_ip: "{{ hostvars[hostvars['fo_ctx'].fo_new].ansible_host }}"
+    app_env: /opt/microservices/app-core/.env
+  tasks:
+    - name: Lewati jika dry run
+      ansible.builtin.meta: end_play
+      when: not hostvars['fo_ctx'].fo_go | default(false)
+
+    # Laravel tanpa config cache membaca .env per request → langsung berlaku
+    - name: DB_HOST aplikasi → primary baru
+      ansible.builtin.lineinfile:
+        path: "{{ app_env }}"
+        regexp: '^DB_HOST='
+        line: "DB_HOST={{ fo_new_ip }}"
+        backup: yes
+
+    - name: Verifikasi aplikasi melayani request
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        status_code: 200
+      register: fo_app
+      retries: 10
+      delay: 3
+      until: fo_app.status == 200
+
+# -----------------------------------------------------------------------------
+# 5. Kode = kenyataan: tukar peran di inventory & group_vars
+# -----------------------------------------------------------------------------
+- name: "Failover DB | perbarui inventory & group_vars"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    fo_old: "{{ hostvars['fo_ctx'].fo_old }}"
+    fo_new: "{{ hostvars['fo_ctx'].fo_new }}"
+    repo: "{{ repo_root }}"
+  tasks:
+    - name: Lewati jika dry run
+      ansible.builtin.meta: end_play
+      when: not hostvars['fo_ctx'].fo_go | default(false)
+
+    - name: Tukar peran DB di inventory & group_vars
+      ansible.builtin.include_tasks: tasks/swap-db-roles.yml
+
+    - name: Selesai - langkah berikutnya
+      ansible.builtin.debug:
+        msg:
+          - "PRIMARY BARU: {{ fo_new }} ({{ hostvars[fo_new].ansible_host }}) - aplikasi sudah dialihkan."
+          - "Primary lama {{ fo_old }} dihentikan & onboot=0 (fenced)."
+          - "Jadikan primary lama replika baru: ansible-playbook playbooks/rebuild-replica.yml -e confirm=REBUILD-REPLICA"
+
+# -----------------------------------------------------------------------------
+# 6. Monitoring: probe DB langsung ke primary baru (reload, tanpa restart)
+# -----------------------------------------------------------------------------
+- name: "Failover DB | arahkan probe monitoring ke primary baru"
+  hosts: backup_monitoring
+  become: yes
+  gather_facts: no
+  vars_files:
+    - ../roles/monitoring/defaults/main.yml
+  tasks:
+    - name: Lewati jika dry run
+      ansible.builtin.meta: end_play
+      when: not hostvars['fo_ctx'].fo_go | default(false)
+
+    # group_vars di disk sudah ditukar, tapi variabel run ini masih nilai lama
+    - name: Perbarui konfigurasi Prometheus
+      ansible.builtin.include_tasks: ../roles/monitoring/tasks/prometheus-config.yml
+      vars:
+        db_host: "{{ hostvars[hostvars['fo_ctx'].fo_new].ansible_host }}"

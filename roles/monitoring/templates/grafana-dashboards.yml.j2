@@ -1,0 +1,16 @@
+# =============================================================================
+# Grafana Dashboard Provisioning - Dikelola Ansible (role monitoring)
+# File JSON: roles/monitoring/files/dashboards/ → /etc/grafana/dashboards
+# Perubahan lewat UI tidak disimpan; edit file JSON di repo lalu deploy ulang.
+# =============================================================================
+apiVersion: 1
+
+providers:
+  - name: homelab
+    folder: Homelab
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/dashboards

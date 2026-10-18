@@ -1,0 +1,25 @@
+---
+# =============================================================================
+# Role Defaults: proxmox_hardening - host pve
+# =============================================================================
+
+# fail2ban: SSH + login Web UI (pvedaemon, port 8006)
+pve_fail2ban_bantime: "1h"
+pve_fail2ban_findtime: "10m"
+pve_fail2ban_maxretry: 5
+# IP host sendiri WAJIB di-ignore: login via Cloudflare Tunnel (cloudflared
+# berjalan di pve → https://<ip-pve>:8006) tercatat dengan rhost = IP pve.
+# Tanpa ini, 5 login gagal dari internet = pve mem-ban dirinya sendiri dan
+# tunnel ke Web UI putus. Perlindungan login dari internet = 2FA (+ Cloudflare Access).
+pve_fail2ban_ignoreip: "127.0.0.1/8 ::1 {{ ansible_host }}"
+
+# Metrics untuk Prometheus (node exporter textfile collector)
+pve_textfile_dir: "/var/lib/prometheus/node-exporter"
+pve_metrics_interval: "15min"
+homelab_state_dir: "/var/lib/homelab"     # stamp waktu sukses offsite
+
+# Rule pve-firewall (level datacenter) - dicocokkan lewat comment
+pve_firewall_rules:
+  - comment: "Prometheus node exporter dari LXC 106"
+    dport: "9100"
+    source: "{{ monitoring_host }}"

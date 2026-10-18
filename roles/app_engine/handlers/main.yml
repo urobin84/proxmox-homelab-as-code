@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# Handlers: app_engine role
+# =============================================================================
+
+# "up -d" hanya me-recreate service yang konfigurasinya berubah
+- name: Apply Docker Compose Stack
+  ansible.builtin.command:
+    cmd: docker compose up -d --remove-orphans
+    chdir: "{{ app_engine_dir }}"
+  listen: "Apply Docker Compose Stack"
+
+- name: Reload Nginx Host
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  listen: "Reload Nginx Host"

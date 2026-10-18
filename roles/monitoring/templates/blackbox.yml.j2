@@ -1,0 +1,29 @@
+# =============================================================================
+# Blackbox Exporter - modul uptime check (dipakai job probe-* di Prometheus)
+# =============================================================================
+modules:
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      preferred_ip_protocol: ip4
+      valid_status_codes: []   # default: 2xx
+      follow_redirects: true
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+
+  # Handshake TLS + validasi sertifikat terhadap CA homelab
+  # (probe_ssl_earliest_cert_expiry → alert sertifikat hampir kedaluwarsa)
+  tcp_tls:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+      tls: true
+      tls_config:
+        ca_file: /etc/blackbox/ca.crt
+        min_version: TLS12

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pg-backup.sh - dump logis semua database PostgreSQL ({{ inventory_hostname }})
+# Dikelola Ansible (role postgres_backup) - dijalankan pg-backup.timer
+# Restore satu DB: pg_restore -U postgres -d <db> --clean <file>.dump
+# Log: journalctl -u pg-backup.service
+# =============================================================================
+set -euo pipefail
+
+DIR="{{ pg_backup_dir }}"
+DATE=$(date +%Y%m%d_%H%M%S)
+psql_q() { runuser -u postgres -- psql -tAX -c "$1"; }
+
+umask 077
+mkdir -p "$DIR"
+
+# Role, password hash & setting global (tidak termasuk di pg_dump per DB)
+runuser -u postgres -- pg_dumpall --globals-only > "$DIR/globals_${DATE}.sql"
+
+for db in $(psql_q "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname <> 'postgres'"); do
+    out="$DIR/${db}_${DATE}.dump"
+    runuser -u postgres -- pg_dump -Fc "$db" > "$out.tmp"
+    mv "$out.tmp" "$out"
+    echo "OK $db → $out ($(du -h "$out" | cut -f1))"
+done
+
+find "$DIR" -type f \( -name '*.dump' -o -name 'globals_*.sql' \) -mtime +{{ pg_backup_retention_days }} -delete
+
+# Metrics sukses → node exporter textfile collector → Prometheus
+PROM="{{ pg_backup_textfile_dir }}/pg_backup.prom"
+if [ -d "$(dirname "$PROM")" ]; then
+    {
+        echo "# HELP homelab_pg_backup_last_success_timestamp_seconds Waktu pg_dump terakhir sukses"
+        echo "# TYPE homelab_pg_backup_last_success_timestamp_seconds gauge"
+        echo "homelab_pg_backup_last_success_timestamp_seconds $(date +%s)"
+        echo "# HELP homelab_pg_backup_size_bytes Total ukuran dump terakhir"
+        echo "# TYPE homelab_pg_backup_size_bytes gauge"
+        echo "homelab_pg_backup_size_bytes $(find "$DIR" -name "*_${DATE}.dump" -printf '%s\n' | awk '{s+=$1} END {print s+0}')"
+    } > "$PROM.tmp"
+    chmod 0644 "$PROM.tmp"
+    mv "$PROM.tmp" "$PROM"
+fi

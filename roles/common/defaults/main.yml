@@ -1,0 +1,73 @@
+---
+# =============================================================================
+# Role Defaults: common - semua LXC (Ubuntu 24.04, unprivileged)
+# =============================================================================
+
+common_base_packages:
+  - curl
+  - wget
+  - git
+  - unzip
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - htop
+  - vim
+  - logrotate
+  - jq
+
+# Tracing & diagnosa jaringan
+common_network_packages:
+  - iproute2          # ip, ss - socket, routing, interface
+  - dnsutils          # dig, nslookup, host
+  - traceroute        # traceroute -T/-U/-I (tcp/udp/icmp)
+  - mtr-tiny          # traceroute + ping kontinu (deteksi packet loss per hop)
+  - tcpdump           # capture paket
+  - netcat-openbsd    # nc - tes port TCP/UDP
+  - socat             # relay/forward socket untuk debugging
+  - nmap              # scan port/service di jaringan internal
+  - iftop             # bandwidth per koneksi (real-time)
+  - nethogs           # bandwidth per proses (real-time)
+  - iperf3            # uji throughput antar LXC
+  - iputils-arping    # deteksi konflik IP / cek L2
+  - conntrack         # tabel NAT/connection tracking (Docker, UFW)
+  - ethtool
+  - lsof
+  - whois
+
+# Keamanan
+# Tidak dipasang (tidak cocok untuk LXC unprivileged / resource kecil):
+#   auditd (kernel audit tidak tersedia di user namespace), AIDE, ClamAV
+common_security_packages:
+  - ufw                 # firewall (rule di group_vars)
+  - fail2ban            # blokir IP brute-force SSH
+  - python3-systemd     # backend journald untuk fail2ban
+  - unattended-upgrades # patch keamanan otomatis
+  - needrestart         # deteksi service yang perlu restart setelah update
+  - lynis               # audit hardening: lynis audit system
+  - debsums             # verifikasi integritas file paket: debsums -s
+
+# SSH hardening: lihat role ssh_hardening
+
+# fail2ban jail sshd
+fail2ban_bantime: "1h"
+fail2ban_findtime: "10m"
+fail2ban_maxretry: 5
+fail2ban_ignoreip: "127.0.0.1/8 ::1 {{ monitoring_host }}"
+
+# Sysctl hardening jaringan (net.* bisa diubah di LXC unprivileged)
+# ip_forward TIDAK disentuh (dibutuhkan Docker di LXC 101/106)
+common_sysctl_hardening:
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.default.accept_source_route: 0
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.conf.default.log_martians: 1
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.icmp_ignore_bogus_error_responses: 1
+  net.ipv4.tcp_syncookies: 1
+  net.ipv6.conf.all.accept_redirects: 0
+  net.ipv6.conf.default.accept_redirects: 0

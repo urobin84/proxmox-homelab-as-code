@@ -1,0 +1,37 @@
+---
+# =============================================================================
+# Role Defaults: proxmox_terraform_access - identitas Terraform di Proxmox
+# User realm "pve" (tidak bisa login SSH/PAM, tanpa password) + API token
+# dengan privilege minimum untuk mengelola LXC/VM & storage.
+# =============================================================================
+tf_pve_user: "terraform@pve"
+tf_pve_token_name: "iac"
+tf_pve_role: "TerraformLXC"
+
+# TIDAK termasuk: Permissions.Modify, User.Modify, Realm.*, Group.Allocate,
+# Sys.PowerMgmt (matikan host), Sys.Modify, Mapping.*, SDN.Allocate
+tf_pve_privileges:
+  - Datastore.AllocateSpace
+  - Datastore.AllocateTemplate
+  - Datastore.Audit
+  - Pool.Audit
+  - SDN.Use
+  - Sys.Audit
+  - Sys.Console
+  - VM.Allocate
+  - VM.Audit
+  - VM.Backup
+  - VM.Clone
+  - VM.Config.CPU
+  - VM.Config.Disk
+  - VM.Config.Memory
+  - VM.Config.Network
+  - VM.Config.Options
+  - VM.Console
+  - VM.Migrate
+  - VM.PowerMgmt
+  - VM.Snapshot
+
+# Secret token disimpan di macOS Keychain (dibaca terraform/tf.sh)
+tf_keychain_service: "proxmoxmqr-home-terraform"
+tf_keychain_account: "{{ tf_pve_user }}!{{ tf_pve_token_name }}"

@@ -1,0 +1,6 @@
+---
+- name: Restart PostgreSQL replica
+  ansible.builtin.systemd:
+    name: "postgresql@{{ pg_replica_cluster }}"
+    state: restarted
+  listen: "Restart PostgreSQL replica"

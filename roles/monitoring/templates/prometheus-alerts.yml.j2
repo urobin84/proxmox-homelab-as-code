@@ -1,0 +1,240 @@
+# =============================================================================
+# Prometheus Alert Rules - dasar untuk homelab
+# Tanpa Alertmanager: alert terlihat di Prometheus (/alerts) & Grafana.
+# =============================================================================
+groups:
+  - name: homelab-node
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ '{{' }} $labels.job {{ '}}' }} di {{ '{{' }} $labels.instance {{ '}}' }} down"
+
+      - alert: DiskHampirPenuh
+        # fuse.* dikecualikan: /etc/pve (pmxcfs) & /mnt/gdrive (kuota Google Drive)
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*|ramfs"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk {{ '{{' }} $labels.mountpoint {{ '}}' }} di {{ '{{' }} $labels.host {{ '}}' }} sisa < 15%"
+
+      - alert: MemoryTinggi
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAM {{ '{{' }} $labels.host {{ '}}' }} terpakai > 90%"
+
+      - alert: CPUTinggi
+        expr: 1 - avg by (host) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU {{ '{{' }} $labels.host {{ '}}' }} > 90% selama 15 menit"
+
+  - name: homelab-database
+    rules:
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL di {{ '{{' }} $labels.host {{ '}}' }} tidak bisa diakses exporter"
+
+      - alert: PostgresKoneksiHampirPenuh
+        expr: sum by (host) (pg_stat_database_numbackends) / on (host) max by (host) (pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Koneksi PostgreSQL {{ '{{' }} $labels.host {{ '}}' }} > 80% dari max_connections"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis di {{ '{{' }} $labels.host {{ '}}' }} tidak bisa diakses exporter"
+
+  # ---------------------------------------------------------------------------
+  # DR & data tier: replikasi PostgreSQL (104 → 105) dan Redis (103)
+  # ---------------------------------------------------------------------------
+  - name: homelab-dr
+    rules:
+      - alert: ReplikaDBTerputus
+        expr: pg_replication_slots_active == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Replika DR {{ '{{' }} $labels.slot_name {{ '}}' }} tidak terhubung ke primary - RPO tidak lagi terjamin"
+
+      - alert: ReplikaDBTertinggal
+        expr: pg_replication_lag_seconds > 60 and on(instance) pg_replication_is_replica == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Replika {{ '{{' }} $labels.host {{ '}}' }} tertinggal {{ '{{' }} $value | humanizeDuration {{ '}}' }} dari primary"
+
+      - alert: WALTertahanBesar
+        expr: pg_replication_slots_pg_wal_lsn_diff > 1073741824
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slot {{ '{{' }} $labels.slot_name {{ '}}' }} menahan > 1GB WAL di primary (batas 2GB, lewat itu replika harus resync)"
+
+      # PITR (pgBackRest): arsip WAL & backup terenkripsi di LXC 106
+      - alert: WALArchiveGagal
+        expr: pg_archiver_is_replica == 0 and pg_archiver_last_failed_timestamp_seconds > pg_archiver_last_archived_timestamp_seconds
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Arsip WAL di {{ '{{' }} $labels.host {{ '}}' }} GAGAL - PITR tidak terjamin & pg_wal di primary terus membesar"
+
+      - alert: PITRBackupTerlambat
+        expr: time() - max by (stanza) (pgbackrest_last_backup_timestamp_seconds) > 26 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tidak ada backup pgBackRest (full/diff) sukses selama > 26 jam"
+
+      - alert: PITRStanzaError
+        expr: pgbackrest_stanza_status != 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Repositori pgBackRest stanza {{ '{{' }} $labels.stanza {{ '}}' }} error (kode {{ '{{' }} $value {{ '}}' }}) - cek: pgbackrest info di LXC 106"
+
+      - alert: RedisMemoriHampirPenuh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis {{ '{{' }} $labels.host {{ '}}' }} memori > 80% - policy noeviction: penuh = tulis DITOLAK"
+
+      - alert: RedisPersistensiGagal
+        expr: redis_aof_last_write_status == 0 or redis_rdb_last_bgsave_status == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis {{ '{{' }} $labels.host {{ '}}' }} gagal menulis AOF/RDB ke disk - data bisa hilang saat restart"
+
+  # ---------------------------------------------------------------------------
+  # Uptime check (Blackbox exporter)
+  # ---------------------------------------------------------------------------
+  - name: homelab-uptime
+    rules:
+      - alert: ServiceTidakBisaDiakses
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ '{{' }} $labels.probe {{ '}}' }} ({{ '{{' }} $labels.instance {{ '}}' }}) gagal diakses selama 2 menit"
+
+      - alert: SertifikatHampirKedaluwarsa
+        expr: probe_ssl_earliest_cert_expiry - time() < 21 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Sertifikat TLS {{ '{{' }} $labels.probe {{ '}}' }} kedaluwarsa dalam {{ '{{' }} $value | humanizeDuration {{ '}}' }} - jalankan site.yml (perpanjang otomatis jika < 30 hari)"
+
+      - alert: ResponsLambat
+        expr: probe_duration_seconds{job="probe-http"} > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ '{{' }} $labels.probe {{ '}}' }} merespons > 3 detik selama 10 menit"
+
+  # ---------------------------------------------------------------------------
+  # Backup (metrics dari host pve & LXC 104 via textfile collector)
+  # ---------------------------------------------------------------------------
+  - name: homelab-backup
+    rules:
+      - alert: BackupLXCTerlambat
+        expr: |
+          homelab_vzdump_last_backup_timestamp_seconds > 0
+            and time() - homelab_vzdump_last_backup_timestamp_seconds > 26 * 3600
+        for: 30m
+        labels:
+          severity: warning
+          host: pve
+        annotations:
+          summary: "Backup vzdump LXC {{ '{{' }} $labels.vmid {{ '}}' }} ({{ '{{' }} $labels.guest {{ '}}' }}) lebih tua dari 26 jam"
+
+      # 0 = belum ada file backup sama sekali (mis. LXC baru dibuat)
+      - alert: BackupLXCBelumPernah
+        expr: homelab_vzdump_last_backup_timestamp_seconds == 0
+        for: 26h
+        labels:
+          severity: warning
+          host: pve
+        annotations:
+          summary: "LXC {{ '{{' }} $labels.vmid {{ '}}' }} ({{ '{{' }} $labels.guest {{ '}}' }}) belum pernah ter-backup selama 26 jam"
+
+      - alert: OffsiteBackupGagal
+        expr: homelab_offsite_last_failed == 1
+        for: 5m
+        labels:
+          severity: warning
+          host: pve
+        annotations:
+          summary: "Upload backup ke Google Drive terakhir GAGAL (journalctl -u homelab-offsite.service)"
+
+      - alert: OffsiteBackupTerlambat
+        expr: time() - homelab_offsite_last_success_timestamp_seconds > 8 * 86400
+        for: 1h
+        labels:
+          severity: warning
+          host: pve
+        annotations:
+          summary: "Tidak ada upload backup ke Google Drive yang sukses selama > 8 hari"
+
+      - alert: PgDumpTerlambat
+        expr: time() - homelab_pg_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg_dump di {{ '{{' }} $labels.host {{ '}}' }} tidak sukses selama > 26 jam"
+
+      - alert: MetricsBackupHilang
+        expr: absent(homelab_vzdump_last_backup_timestamp_seconds) or absent(homelab_pg_backup_last_success_timestamp_seconds)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Metrics status backup tidak diterima (cek homelab-metrics.timer di pve / pg-backup di LXC 104)"
+
+  # ---------------------------------------------------------------------------
+  # Host pve - storage
+  # ---------------------------------------------------------------------------
+  - name: homelab-proxmox
+    rules:
+      - alert: ThinPoolHampirPenuh
+        expr: homelab_lvm_thinpool_used_percent > 80
+        for: 15m
+        labels:
+          severity: critical
+          host: pve
+        annotations:
+          summary: "Thin pool LVM {{ '{{' }} $labels.lv {{ '}}' }} ({{ '{{' }} $labels.type {{ '}}' }}) terpakai {{ '{{' }} $value | humanize {{ '}}' }}% - LXC bisa berhenti jika penuh"

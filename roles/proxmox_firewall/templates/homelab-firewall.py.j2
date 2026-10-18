@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+# =============================================================================
+# Mikrosegmentasi firewall Proxmox (idempotent, via pvesh)
+# Dikelola Ansible (role proxmox_firewall). --check: laporkan saja.
+#   - IPSet & security group "hl-*" di level datacenter
+#   - Aturan & opsi firewall per LXC (diganti penuh oleh desired state)
+# Aturan manual non-"hl-" di cluster.fw tidak disentuh.
+# =============================================================================
+import json
+import subprocess
+import sys
+
+CHECK = "--check" in sys.argv
+NODE = {{ inventory_hostname | to_json }}
+
+IPSETS = {{ pve_fw_ipsets | to_json }}
+GROUPS = {{ pve_fw_groups | to_json }}
+CONTAINERS = {{ pve_fw_containers | to_json }}
+CT_OPTIONS = {"enable": 1, "policy_in": "DROP", "policy_out": "ACCEPT", "log_level_in": "nolog"}
+
+changed = []
+
+
+def pvesh(*args):
+    if CHECK and args[0] != "get":
+        return None
+    out = subprocess.check_output(["pvesh", *args, "--output-format", "json"], text=True)
+    return json.loads(out) if out.strip() else None
+
+
+def rule_key(r):
+    """Bentuk pembanding aturan (abaikan pos/digest/field kosong)."""
+    keys = ("type", "action", "macro", "source", "dest", "proto", "dport", "comment", "enable")
+    norm = {k: str(r.get(k, "")) for k in keys}
+    norm["enable"] = norm["enable"] or "1"
+    return tuple(norm[k] for k in keys)
+
+
+def reconcile_rules(base, wanted, label):
+    current = pvesh("get", base) or []
+    current = sorted(current, key=lambda r: r["pos"])
+    if [rule_key(r) for r in current] == [rule_key(dict(r, enable=1)) for r in wanted]:
+        return
+    changed.append(f"aturan {label}: {len(current)} → {len(wanted)}")
+    for r in sorted(current, key=lambda r: -r["pos"]):
+        pvesh("delete", f"{base}/{r['pos']}")
+    for r in reversed(wanted):  # create menyisipkan di posisi 0
+        args = []
+        for k, v in r.items():
+            args += [f"--{k}", str(v)]
+        pvesh("create", base, *args, "--enable", "1")
+
+
+# --- IPSet ------------------------------------------------------------------
+existing_sets = {s["name"] for s in (pvesh("get", "/cluster/firewall/ipset") or [])}
+for name, cidrs in IPSETS.items():
+    if name not in existing_sets:
+        pvesh("create", "/cluster/firewall/ipset", "--name", name, "--comment", "dikelola Ansible")
+        changed.append(f"ipset {name}: dibuat")
+        current = set()
+    else:
+        current = {e["cidr"] for e in (pvesh("get", f"/cluster/firewall/ipset/{name}") or [])}
+    want = set(cidrs)
+    for c in sorted(want - current):
+        pvesh("create", f"/cluster/firewall/ipset/{name}", "--cidr", c)
+        changed.append(f"ipset {name}: + {c}")
+    for c in sorted(current - want):
+        pvesh("delete", f"/cluster/firewall/ipset/{name}/{c}")
+        changed.append(f"ipset {name}: - {c}")
+
+# --- Security group ---------------------------------------------------------
+existing_groups = {g["group"] for g in (pvesh("get", "/cluster/firewall/groups") or [])}
+for name, rules in GROUPS.items():
+    if name not in existing_groups:
+        pvesh("create", "/cluster/firewall/groups", "--group", name, "--comment", "dikelola Ansible")
+        changed.append(f"group {name}: dibuat")
+        if CHECK:
+            changed.append(f"aturan group {name}: 0 → {len(rules)}")
+            continue
+    reconcile_rules(f"/cluster/firewall/groups/{name}", rules, f"group {name}")
+
+# --- Per LXC: opsi + aturan (hanya referensi security group) ----------------
+for vmid, groups in CONTAINERS.items():
+    base = f"/nodes/{NODE}/lxc/{vmid}/firewall"
+    opts = pvesh("get", f"{base}/options") or {}
+    diff = {k: v for k, v in CT_OPTIONS.items() if str(opts.get(k, "")) != str(v)}
+    if diff:
+        args = []
+        for k, v in diff.items():
+            args += [f"--{k}", str(v)]
+        pvesh("set", f"{base}/options", *args)
+        changed.append(f"opsi lxc {vmid}: {', '.join(diff)}")
+    wanted = [{"type": "group", "action": g, "comment": "dikelola Ansible"} for g in groups]
+    reconcile_rules(f"{base}/rules", wanted, f"lxc {vmid}")
+
+for line in changed:
+    print(f"CHANGED {line}")

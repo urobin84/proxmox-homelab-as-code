@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# =============================================================================
+# pgbackrest-metrics.sh - status backup PITR → node exporter textfile
+# Dikelola Ansible (role pgbackrest_repo) - dijalankan pgbackrest-metrics.timer
+# =============================================================================
+set -euo pipefail
+OUT="{{ pgbackrest_textfile_dir }}/pgbackrest.prom"
+TMP=$(mktemp "{{ pgbackrest_textfile_dir }}/.pgbackrest.prom.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+
+runuser -u {{ pgbackrest_user }} -- pgbackrest --stanza={{ pgbackrest_stanza }} --output=json info 2>/dev/null \
+| python3 -I -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = []
+print("# HELP pgbackrest_stanza_status Status stanza (0 = ok, lainnya = error)")
+print("# TYPE pgbackrest_stanza_status gauge")
+print("# HELP pgbackrest_last_backup_timestamp_seconds Waktu selesai backup terakhir per tipe")
+print("# TYPE pgbackrest_last_backup_timestamp_seconds gauge")
+print("# HELP pgbackrest_last_backup_size_bytes Ukuran database pada backup terakhir per tipe")
+print("# TYPE pgbackrest_last_backup_size_bytes gauge")
+print("# HELP pgbackrest_backup_count Jumlah backup tersimpan per tipe")
+print("# TYPE pgbackrest_backup_count gauge")
+print("# HELP pgbackrest_repo_size_bytes Ukuran backup di repositori (terkompresi, terenkripsi)")
+print("# TYPE pgbackrest_repo_size_bytes gauge")
+if not data:
+    print("pgbackrest_stanza_status{stanza=\"{{ pgbackrest_stanza }}\"} 99")
+for st in data:
+    name = st["name"]
+    print("pgbackrest_stanza_status{stanza=\"%s\"} %d" % (name, st["status"]["code"]))
+    last, count, repo = {}, {}, 0
+    for b in st.get("backup", []):
+        t = b["type"]
+        count[t] = count.get(t, 0) + 1
+        repo += b["info"]["repository"].get("delta", 0)
+        if t not in last or b["timestamp"]["stop"] > last[t]["timestamp"]["stop"]:
+            last[t] = b
+    for t in ("full", "diff", "incr"):
+        b = last.get(t)
+        print("pgbackrest_last_backup_timestamp_seconds{stanza=\"%s\",type=\"%s\"} %d" % (name, t, b["timestamp"]["stop"] if b else 0))
+        print("pgbackrest_last_backup_size_bytes{stanza=\"%s\",type=\"%s\"} %d" % (name, t, b["info"]["size"] if b else 0))
+        print("pgbackrest_backup_count{stanza=\"%s\",type=\"%s\"} %d" % (name, t, count.get(t, 0)))
+    print("pgbackrest_repo_size_bytes{stanza=\"%s\"} %d" % (name, repo))
+' > "$TMP"
+
+chmod 0644 "$TMP"
+mv "$TMP" "$OUT"

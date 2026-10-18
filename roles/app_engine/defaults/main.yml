@@ -1,0 +1,8 @@
+---
+# =============================================================================
+# Role Defaults: app_engine - stack MQR asli di LXC 101
+# =============================================================================
+app_engine_dir: "/opt/microservices"
+app_web_port: 8080          # mqr-web-service (nginx container)
+app_web_memory_limit: "512M"
+app_core_memory_limit: "1G"
