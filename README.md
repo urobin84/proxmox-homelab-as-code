@@ -10,6 +10,8 @@ sebagai kode dengan **Terraform** dan **Ansible**.
 > Laptop bekas (Intel i7-8750H, RAM 32 GB, 1 NIC) → Proxmox VE 9 → 6 LXC Ubuntu 24.04
 > → stack aplikasi + database HA + PITR + observability + firewall mikrosegmentasi.
 
+![Dashboard Homelab Overview: status host, uptime aplikasi, dan backup](docs/images/dashboard-overview.png)
+
 ---
 
 ## Daftar isi
@@ -134,6 +136,17 @@ vzdump 02:00, verifikasi repositori mingguan, offsite Minggu 05:00.
   backup terlambat, sertifikat hampir kedaluwarsa, Redis memori) → email via Alertmanager.
 - **Dashboard**: *Homelab Overview* (38 panel, dibuat dengan [tools/gen_homelab_dashboard.py](tools/gen_homelab_dashboard.py))
   + Node Exporter Full, PostgreSQL, Blackbox — semua di-provision otomatis.
+
+![Panel DR & PITR: replika streaming lag 0 detik, Redis, status repositori pgBackRest](docs/images/dashboard-dr-pitr.png)
+
+<details>
+<summary>Dashboard lengkap (klik untuk membuka)</summary>
+
+![Dashboard Homelab Overview lengkap: host, uptime, backup, kapasitas, DR, PITR](docs/images/dashboard-full.png)
+
+*Panel log keamanan (memuat alamat IP) tidak ditampilkan di tangkapan layar publik.*
+
+</details>
 
 ## Hasil drill
 
