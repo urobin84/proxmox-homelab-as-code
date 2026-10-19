@@ -236,6 +236,25 @@ ansible-playbook playbooks/deploy-firewall.yml --check
 ansible-playbook playbooks/deploy-firewall.yml -e pve_fw_enabled=false
 ```
 
+### Hapus semua LXC & bangun ulang dari kode
+
+Kode, konfigurasi & secret ada di repo/vault; yang **tidak** bisa dibuat ulang dari
+kode (kode aplikasi + `.env`, isi database) disimpan dulu sebagai *rebuild kit*
+di HDD backup (salinan kecil di Mac, diabaikan git). vzdump terakhir ditandai
+`protected` sebagai titik pulih darurat (`pct restore`).
+
+```bash
+ansible-playbook playbooks/rebuild-export.yml                     # backup segar + rebuild kit
+ansible-playbook playbooks/wipe-lxc.yml                           # rencana (tanpa perubahan)
+ansible-playbook playbooks/wipe-lxc.yml -e confirm=WIPE-ALL-LXC   # hapus (kit harus < 6 jam)
+
+cd terraform && ./tf.sh apply && cd ..                            # 6 LXC baru + kunci SSH
+ansible-playbook playbooks/rebuild-restore.yml --tags app         # kode aplikasi → 101
+ansible-playbook site.yml                                         # seluruh konfigurasi
+ansible-playbook playbooks/rebuild-restore.yml --tags db          # role & data → 104
+ansible-playbook playbooks/deploy-apps.yml && ansible-playbook playbooks/backup-now.yml
+```
+
 ## Pelajaran penting
 
 - **`prevent_destroy` menyelamatkan produksi.** Provider Terraform menganggap

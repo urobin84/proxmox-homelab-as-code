@@ -6,6 +6,17 @@
 # Rule lokal (socket/localhost) & rule lain di pg_hba.conf tidak diubah.
 # =============================================================================
 
+# Server lama dipasang manual; di LXC baru (rebuild dari nol) paket dipasang
+# di sini. Database & user aplikasi dipulihkan dari playbooks/rebuild-restore.yml
+- name: Install PostgreSQL
+  ansible.builtin.apt:
+    name:
+      - "postgresql-{{ postgres_version }}"
+      - postgresql-contrib
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+
 - name: Kumpulkan IP host aplikasi
   ansible.builtin.set_fact:
     pg_app_client_ips: >-

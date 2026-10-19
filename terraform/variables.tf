@@ -17,6 +17,12 @@ variable "lxc_template" {
   default     = "local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst"
 }
 
+variable "ssh_public_key_file" {
+  description = "Kunci publik SSH yang dipasang ke root LXC BARU (dipakai Ansible). LXC yang sudah ada tidak terpengaruh"
+  type        = string
+  default     = "~/.ssh/proxmoxmqr_home.pub"
+}
+
 variable "network" {
   description = "Jaringan LAN untuk semua LXC"
   type = object({

@@ -1,0 +1,110 @@
+---
+# =============================================================================
+# HAPUS SEMUA LXC homelab (host Proxmox, HDD backup & rebuild kit tetap).
+# Untuk latihan / DR drill membangun ulang dari kode.
+#
+#   Lihat rencana saja (tanpa perubahan):
+#     ansible-playbook playbooks/wipe-lxc.yml
+#   Eksekusi:
+#     ansible-playbook playbooks/wipe-lxc.yml -e confirm=WIPE-ALL-LXC
+#
+# Ditolak jika rebuild kit (playbooks/rebuild-export.yml) lebih tua dari
+# rk_max_age_hours atau vzdump yang tercatat di MANIFEST tidak ada/rusak.
+#
+# Bangun ulang (urutan):
+#   cd terraform && ./tf.sh apply                                 # 6 LXC baru
+#   ansible-playbook playbooks/rebuild-restore.yml --tags app     # kode aplikasi
+#   ansible-playbook site.yml                                     # semua konfigurasi
+#   ansible-playbook playbooks/rebuild-restore.yml --tags db      # data database
+#   ansible-playbook playbooks/deploy-apps.yml
+# Darurat (kembali persis seperti sebelum wipe): pct restore dari vzdump PROTECTED
+# =============================================================================
+
+- name: "Wipe LXC | preflight"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Bagikan keputusan ke semua play
+      ansible.builtin.add_host:
+        name: wipe_ctx
+        confirmed: "{{ (confirm | default('')) == 'WIPE-ALL-LXC' }}"
+
+- name: "Wipe LXC | cek rebuild kit & backup (host pve)"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  vars:
+    rk_dir: "{{ proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/rebuild-kit"
+    rk_max_age_hours: 6
+    wipe_ids: "{{ groups['all_lxc'] | map('extract', hostvars, 'lxc_id') | map('string') | list }}"
+  tasks:
+    - name: Rebuild kit lengkap, segar & checksum cocok
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cd "{{ rk_dir }}"
+        created=$(sed -n 's/^created=//p' MANIFEST)
+        age=$(( ($(date +%s) - created) / 3600 ))
+        [ "$age" -lt {{ rk_max_age_hours }} ] || { echo "rebuild kit berumur ${age} jam - jalankan rebuild-export.yml dulu" >&2; exit 1; }
+        sha256sum -c --quiet SHA256SUMS
+        dump="$(dirname "{{ rk_dir }}")/dump"
+        sed -n 's/^vzdump=//p' MANIFEST | while read -r id file; do
+          [ -f "$dump/$file" ] || { echo "vzdump $id hilang: $file" >&2; exit 1; }
+          echo "$id $file"
+        done
+      args:
+        executable: /bin/bash
+      register: wipe_kit
+      changed_when: false
+
+    - name: Setiap LXC punya vzdump di MANIFEST
+      ansible.builtin.assert:
+        that: item in (wipe_kit.stdout_lines | map('split', ' ') | map('first') | list)
+        fail_msg: "LXC {{ item }} tidak punya vzdump di rebuild kit"
+        quiet: true
+      loop: "{{ wipe_ids }}"
+
+    - name: Rencana
+      ansible.builtin.debug:
+        msg:
+          - "AKAN DIHAPUS PERMANEN: LXC {{ wipe_ids | join(', ') }} (disk & mount point ikut terhapus)"
+          - "Tetap aman: host Proxmox, HDD backup, rebuild kit ({{ rk_dir }})"
+          - "Titik pulih (vzdump PROTECTED): {{ wipe_kit.stdout_lines }}"
+          - "{{ 'MENJALANKAN...' if hostvars['wipe_ctx'].confirmed else 'Mode rencana - tambahkan -e confirm=WIPE-ALL-LXC untuk menjalankan' }}"
+
+    - name: Hentikan & hapus LXC
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if pct status {{ item }} >/dev/null 2>&1; then
+          pct stop {{ item }} >/dev/null 2>&1 || true
+          pct destroy {{ item }} --purge 1 --destroy-unreferenced-disks 1
+          echo "dihapus"
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ wipe_ids }}"
+      register: wipe_destroy
+      changed_when: "'dihapus' in wipe_destroy.stdout"
+      when: hostvars['wipe_ctx'].confirmed
+
+- name: "Wipe LXC | bersihkan state Terraform & known_hosts (Mac)"
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks:
+    - name: Hapus LXC dari state Terraform
+      ansible.builtin.command:
+        cmd: ./tf.sh state rm proxmox_virtual_environment_container.lxc
+        chdir: "{{ repo_root }}/terraform"
+      register: wipe_tf
+      changed_when: "'Successfully removed' in wipe_tf.stdout"
+      failed_when: wipe_tf.rc != 0 and 'Invalid target address' not in wipe_tf.stderr
+      when: hostvars['wipe_ctx'].confirmed
+
+    # LXC baru = host key baru; tanpa ini SSH (accept-new) menolak koneksi
+    - name: Hapus host key lama dari known_hosts
+      ansible.builtin.command:
+        cmd: ssh-keygen -R {{ hostvars[item].ansible_host }}
+      loop: "{{ groups['all_lxc'] }}"
+      changed_when: true
+      when: hostvars['wipe_ctx'].confirmed

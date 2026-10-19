@@ -88,6 +88,11 @@ resource "proxmox_virtual_environment_container" "lxc" {
   initialization {
     hostname = each.value.hostname
 
+    # Hanya saat LXC dibuat (lihat ignore_changes) - agar Ansible bisa login
+    user_account {
+      keys = [trimspace(file(pathexpand(var.ssh_public_key_file)))]
+    }
+
     dns {
       domain  = var.lxc_defaults.searchdomain
       servers = each.value.nameservers

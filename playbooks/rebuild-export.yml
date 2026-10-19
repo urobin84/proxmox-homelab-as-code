@@ -1,0 +1,158 @@
+---
+# =============================================================================
+# Rebuild kit - simpan semua yang TIDAK bisa dibuat ulang dari kode, sebelum
+# LXC dihapus (playbooks/wipe-lxc.yml). Tidak mengubah apa pun di LXC.
+#
+#   1. Backup segar: pg_dump + vzdump semua LXC (playbooks/backup-now.yml)
+#   2. Verifikasi arsip vzdump terbaru (zstd -t) & tandai PROTECTED agar tidak
+#      ikut dipangkas retensi (keep-daily) selama LXC belum dibangun ulang
+#   3. Rebuild kit di HDD backup (<BackupFolder>/rebuild-kit/):
+#        globals.sql            - role & password PostgreSQL (pg_dumpall -g)
+#        db_app_mqr.dump        - database aplikasi (pg_dump -Fc)
+#        microservices.tar.zst  - /opt/microservices (kode, vendor, .env)
+#        microservices-app.image.tar.zst - image Docker aplikasi (cadangan)
+#        MANIFEST               - waktu & sha256 (dibaca wipe-lxc.yml)
+#   4. Salinan kit (tanpa image) ke Mac: rebuild-kit/ (diabaikan git)
+#
+# Eksekusi: ansible-playbook playbooks/rebuild-export.yml
+# =============================================================================
+
+- name: Backup segar
+  ansible.builtin.import_playbook: backup-now.yml
+
+- name: "Rebuild kit | dump database (LXC 104)"
+  hosts: database
+  become: yes
+  gather_facts: no
+  vars:
+    rk_tmp: /root/rebuild-export
+  tasks:
+    - name: Direktori ekspor sementara
+      ansible.builtin.file:
+        path: "{{ rk_tmp }}"
+        state: directory
+        mode: '0700'
+
+    - name: Dump role & database aplikasi
+      ansible.builtin.shell: |
+        set -euo pipefail
+        runuser -u postgres -- pg_dumpall --globals-only > {{ rk_tmp }}/globals.sql
+        {% for db in pg_app_databases | default(['db_app_mqr']) %}
+        runuser -u postgres -- pg_dump -Fc {{ db }} > {{ rk_tmp }}/{{ db }}.dump
+        {% endfor %}
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+- name: "Rebuild kit | kode & image aplikasi (LXC 101)"
+  hosts: app_engine
+  become: yes
+  gather_facts: no
+  vars:
+    rk_tmp: /root/rebuild-export
+  tasks:
+    - name: Direktori ekspor sementara
+      ansible.builtin.file:
+        path: "{{ rk_tmp }}"
+        state: directory
+        mode: '0700'
+
+    - name: Arsipkan /opt/microservices & image aplikasi
+      ansible.builtin.shell: |
+        set -euo pipefail
+        tar --zstd -cf {{ rk_tmp }}/microservices.tar.zst --exclude='*~' -C /opt microservices
+        docker save microservices-app:latest | zstd -q -T0 > {{ rk_tmp }}/microservices-app.image.tar.zst
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+- name: "Rebuild kit | kumpulkan di HDD backup (host pve)"
+  hosts: proxmox
+  become: yes
+  gather_facts: no
+  vars:
+    rk_tmp: /root/rebuild-export
+    rk_dir: "{{ proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/rebuild-kit"
+    rk_storage: "{{ proxmox_backup_storage | default('BackupFolder') }}"
+    rk_sources:
+      - { vmid: "{{ hostvars[groups['database'][0]].lxc_id }}", files: "{{ ['globals.sql'] + (pg_app_databases | default(['db_app_mqr']) | map('regex_replace', '$', '.dump') | list) }}" }
+      - { vmid: "{{ hostvars[groups['app_engine'][0]].lxc_id }}", files: ["microservices.tar.zst", "microservices-app.image.tar.zst"] }
+  tasks:
+    - name: Direktori rebuild kit (ganti isi lama)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        rm -rf "{{ rk_dir }}.new" && mkdir -p "{{ rk_dir }}.new"
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Tarik file dari LXC (pct pull)
+      ansible.builtin.command:
+        cmd: pct pull {{ item.0.vmid }} {{ rk_tmp }}/{{ item.1 }} {{ rk_dir }}.new/{{ item.1 }}
+      loop: "{{ rk_sources | subelements('files') }}"
+      loop_control:
+        label: "{{ item.0.vmid }}:{{ item.1 }}"
+      changed_when: true
+
+    - name: Hapus file sementara di LXC
+      ansible.builtin.command:
+        cmd: pct exec {{ item.vmid }} -- rm -rf {{ rk_tmp }}
+      loop: "{{ rk_sources }}"
+      loop_control:
+        label: "{{ item.vmid }}"
+      changed_when: true
+
+    # Arsip vzdump terbaru per LXC: harus utuh & dibuat oleh backup-now di atas
+    - name: Verifikasi & lindungi vzdump terbaru tiap LXC
+      ansible.builtin.shell: |
+        set -euo pipefail
+        dump="{{ proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/dump"
+        for id in {{ groups['all_lxc'] | map('extract', hostvars, 'lxc_id') | join(' ') }}; do
+          f=$(ls -1t "$dump"/vzdump-lxc-"$id"-*.tar.zst | head -n1)
+          age=$(( $(date +%s) - $(stat -c %Y "$f") ))
+          [ "$age" -lt 7200 ] || { echo "vzdump $id terlalu lama ($f)" >&2; exit 1; }
+          zstd -tq "$f"
+          pvesh set /nodes/$(hostname)/storage/{{ rk_storage }}/content/{{ rk_storage }}:backup/$(basename "$f") --protected 1
+          echo "$id $(basename "$f")"
+        done
+      args:
+        executable: /bin/bash
+      register: rk_vzdump
+      changed_when: true
+
+    - name: Tulis MANIFEST & aktifkan kit
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cd "{{ rk_dir }}.new"
+        {
+          echo "created=$(date +%s)"
+          echo "created_human=$(date '+%F %T %Z')"
+          {% for line in rk_vzdump.stdout_lines %}
+          echo "vzdump={{ line }}"
+          {% endfor %}
+        } > MANIFEST
+        sha256sum globals.sql *.dump *.tar.zst > SHA256SUMS
+        rm -rf "{{ rk_dir }}.old"
+        [ ! -d "{{ rk_dir }}" ] || mv "{{ rk_dir }}" "{{ rk_dir }}.old"
+        mv "{{ rk_dir }}.new" "{{ rk_dir }}"
+        rm -rf "{{ rk_dir }}.old"
+        ls -lh "{{ rk_dir }}" | awk 'NR>1 {print $5, $9}'
+      args:
+        executable: /bin/bash
+      register: rk_manifest
+      changed_when: true
+
+    - name: Salin kit (tanpa image) ke Mac
+      ansible.builtin.fetch:
+        src: "{{ rk_dir }}/{{ item }}"
+        dest: "{{ repo_root }}/rebuild-kit/"
+        flat: yes
+      loop: "{{ ['MANIFEST', 'SHA256SUMS', 'globals.sql', 'microservices.tar.zst'] + (pg_app_databases | default(['db_app_mqr']) | map('regex_replace', '$', '.dump') | list) }}"
+
+    - name: Ringkasan rebuild kit
+      ansible.builtin.debug:
+        msg:
+          - "Kit di HDD: {{ rk_dir }}"
+          - "{{ rk_manifest.stdout_lines }}"
+          - "vzdump terverifikasi & PROTECTED: {{ rk_vzdump.stdout_lines }}"
+          - "Salinan di Mac: {{ repo_root }}/rebuild-kit/"

@@ -1,0 +1,131 @@
+---
+# =============================================================================
+# Pulihkan data dari rebuild kit (playbooks/rebuild-export.yml) ke LXC yang
+# baru dibangun ulang. Tidak menimpa: dilewati jika kode/database sudah ada.
+#
+#   --tags app    kode aplikasi → LXC 101 (SEBELUM site.yml; standby 102
+#                 tersinkron otomatis oleh role app_standby)
+#   --tags db     role + database aplikasi → LXC 104 (SETELAH site.yml;
+#                 replika 105 ikut lewat streaming replication)
+#   --tags image  (opsional) muat image Docker lama jika build ulang gagal
+#
+# Lihat urutan lengkap di playbooks/wipe-lxc.yml
+# =============================================================================
+
+- name: "Restore | kode aplikasi (LXC 101)"
+  hosts: app_engine
+  become: yes
+  gather_facts: no
+  tags: [app]
+  vars:
+    rk_dir: "{{ hostvars[groups['proxmox'][0]].proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/rebuild-kit"
+  tasks:
+    - name: Cek kode aplikasi
+      ansible.builtin.stat:
+        path: /opt/microservices/app-core
+      register: rs_app
+
+    - name: Kirim arsip dari HDD backup (pct push)
+      ansible.builtin.command:
+        cmd: pct push {{ lxc_id }} {{ rk_dir }}/microservices.tar.zst /root/microservices.tar.zst
+      delegate_to: "{{ groups['proxmox'][0] }}"
+      when: not rs_app.stat.exists
+
+    - name: Ekstrak ke /opt/microservices
+      ansible.builtin.shell: |
+        set -euo pipefail
+        mkdir -p /opt
+        tar --zstd -xpf /root/microservices.tar.zst -C /opt
+        rm -f /root/microservices.tar.zst
+      args:
+        executable: /bin/bash
+      when: not rs_app.stat.exists
+
+    - name: Hasil
+      ansible.builtin.debug:
+        msg: "{{ 'Kode aplikasi sudah ada - dilewati' if rs_app.stat.exists else 'Kode aplikasi dipulihkan ke /opt/microservices' }}"
+
+- name: "Restore | image Docker aplikasi (opsional)"
+  hosts: app_engine
+  become: yes
+  gather_facts: no
+  tags: [never, image]
+  vars:
+    rk_dir: "{{ hostvars[groups['proxmox'][0]].proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/rebuild-kit"
+  tasks:
+    - name: Kirim image dari HDD backup (pct push)
+      ansible.builtin.command:
+        cmd: pct push {{ lxc_id }} {{ rk_dir }}/microservices-app.image.tar.zst /root/microservices-app.image.tar.zst
+      delegate_to: "{{ groups['proxmox'][0] }}"
+
+    - name: docker load
+      ansible.builtin.shell: |
+        set -euo pipefail
+        zstd -dcq /root/microservices-app.image.tar.zst | docker load
+        rm -f /root/microservices-app.image.tar.zst
+      args:
+        executable: /bin/bash
+
+- name: "Restore | database aplikasi (LXC 104)"
+  hosts: database
+  become: yes
+  gather_facts: no
+  tags: [db]
+  vars:
+    rk_dir: "{{ hostvars[groups['proxmox'][0]].proxmox_backup_storage_path | default('/mnt/pve/proxmox-target') }}/rebuild-kit"
+    rs_dbs: "{{ pg_app_databases | default(['db_app_mqr']) }}"
+  tasks:
+    - name: Harus primary (bukan replika)
+      ansible.builtin.command:
+        cmd: runuser -u postgres -- psql -tAXc "SELECT pg_is_in_recovery()"
+      register: rs_recovery
+      changed_when: false
+      failed_when: rs_recovery.stdout != 'f'
+
+    - name: Database yang sudah ada
+      ansible.builtin.command:
+        cmd: runuser -u postgres -- psql -tAXc "SELECT datname FROM pg_database"
+      register: rs_existing
+      changed_when: false
+
+    - name: Kirim dump dari HDD backup (pct push)
+      ansible.builtin.command:
+        cmd: pct push {{ lxc_id }} {{ rk_dir }}/{{ item }} /root/{{ item }}
+      delegate_to: "{{ groups['proxmox'][0] }}"
+      loop: "{{ ['globals.sql'] + (rs_dbs | map('regex_replace', '$', '.dump') | list) }}"
+
+    # Role yang sudah dibuat site.yml (replicator, prometheus) → "already exists"
+    # (diabaikan); password dari dump = password vault yang sama
+    - name: Pulihkan role & password
+      ansible.builtin.shell: |
+        set -uo pipefail
+        install -o postgres -m 0600 /root/globals.sql /tmp/globals.sql
+        runuser -u postgres -- psql -qX -f /tmp/globals.sql 2>&1 | grep -v 'already exists' || true
+        rm -f /tmp/globals.sql /root/globals.sql
+      args:
+        executable: /bin/bash
+      register: rs_globals
+
+    - name: Pulihkan database
+      ansible.builtin.shell: |
+        set -euo pipefail
+        install -o postgres -m 0600 /root/{{ item }}.dump /tmp/{{ item }}.dump
+        runuser -u postgres -- pg_restore --create --exit-on-error -d postgres /tmp/{{ item }}.dump
+        rm -f /tmp/{{ item }}.dump
+      args:
+        executable: /bin/bash
+      loop: "{{ rs_dbs }}"
+      when: item not in rs_existing.stdout_lines
+
+    - name: Bersihkan dump
+      ansible.builtin.file:
+        path: /root/{{ item }}.dump
+        state: absent
+      loop: "{{ rs_dbs }}"
+
+    - name: Hasil
+      ansible.builtin.debug:
+        msg:
+          - "Dipulihkan: {{ rs_dbs | reject('in', rs_existing.stdout_lines) | list }}"
+          - "Sudah ada (dilewati): {{ rs_dbs | select('in', rs_existing.stdout_lines) | list }}"
+          - "Lanjut: ansible-playbook playbooks/deploy-apps.yml && ansible-playbook playbooks/backup-now.yml"
