@@ -463,7 +463,7 @@
       },
       "gridPos": {
         "h": 3,
-        "w": 4,
+        "w": 7,
         "x": 10,
         "y": 19
       },
@@ -521,77 +521,6 @@
     {
       "type": "stat",
       "id": 11,
-      "title": "Offsite GDrive terakhir sukses",
-      "description": "Upload terenkripsi mingguan (Minggu 05:00)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 5,
-        "x": 14,
-        "y": 19
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "(time() - homelab_offsite_last_success_timestamp_seconds) / 86400",
-          "refId": "A",
-          "legendFormat": "hari lalu",
-          "instant": true,
-          "range": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "d",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 7
-              },
-              {
-                "color": "red",
-                "value": 8
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "decimals": 1
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value_and_name",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      }
-    },
-    {
-      "type": "stat",
-      "id": 12,
       "title": "pg_dump terakhir sukses",
       "description": "Dump harian 01:30 di LXC 104",
       "datasource": {
@@ -600,8 +529,8 @@
       },
       "gridPos": {
         "h": 3,
-        "w": 5,
-        "x": 19,
+        "w": 7,
+        "x": 17,
         "y": 19
       },
       "targets": [
@@ -662,7 +591,7 @@
     },
     {
       "type": "bargauge",
-      "id": 13,
+      "id": 12,
       "title": "Ukuran backup terbaru",
       "description": "",
       "datasource": {
@@ -725,7 +654,7 @@
     },
     {
       "type": "row",
-      "id": 14,
+      "id": 13,
       "title": "Kapasitas",
       "collapsed": false,
       "gridPos": {
@@ -738,7 +667,7 @@
     },
     {
       "type": "bargauge",
-      "id": 15,
+      "id": 14,
       "title": "Disk / per host",
       "description": "",
       "datasource": {
@@ -809,7 +738,7 @@
     },
     {
       "type": "bargauge",
-      "id": 16,
+      "id": 15,
       "title": "RAM per host",
       "description": "",
       "datasource": {
@@ -880,7 +809,7 @@
     },
     {
       "type": "bargauge",
-      "id": 17,
+      "id": 16,
       "title": "Storage host pve",
       "description": "Thin pool = disk semua LXC. Penuh = LXC berhenti",
       "datasource": {
@@ -913,17 +842,6 @@
           "expr": "100 - node_filesystem_avail_bytes{host=\"pve\",mountpoint=\"/mnt/pve/proxmox-target\"} / node_filesystem_size_bytes{host=\"pve\",mountpoint=\"/mnt/pve/proxmox-target\"} * 100",
           "refId": "B",
           "legendFormat": "HDD backup (NTFS)",
-          "instant": true,
-          "range": false
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "100 - node_filesystem_avail_bytes{host=\"pve\",mountpoint=\"/mnt/gdrive\"} / node_filesystem_size_bytes{host=\"pve\",mountpoint=\"/mnt/gdrive\"} * 100",
-          "refId": "C",
-          "legendFormat": "Google Drive (kuota)",
           "instant": true,
           "range": false
         }
@@ -973,7 +891,7 @@
     },
     {
       "type": "stat",
-      "id": 18,
+      "id": 17,
       "title": "Update paket tertunda",
       "description": "Dari apt.prom (node exporter). unattended-upgrades memasang patch keamanan otomatis",
       "datasource": {
@@ -1043,7 +961,7 @@
     },
     {
       "type": "row",
-      "id": 19,
+      "id": 18,
       "title": "Keamanan (log dari Loki)",
       "collapsed": false,
       "gridPos": {
@@ -1056,7 +974,7 @@
     },
     {
       "type": "timeseries",
-      "id": 20,
+      "id": 19,
       "title": "SSH login gagal",
       "description": "",
       "datasource": {
@@ -1113,7 +1031,7 @@
     },
     {
       "type": "timeseries",
-      "id": 21,
+      "id": 20,
       "title": "Koneksi diblokir UFW (per tujuan)",
       "description": "Log UFW semua LXC tercatat di kernel pve (nf_log_all_netns)",
       "datasource": {
@@ -1170,7 +1088,7 @@
     },
     {
       "type": "timeseries",
-      "id": 22,
+      "id": 21,
       "title": "fail2ban: ban baru",
       "description": "",
       "datasource": {
@@ -1227,7 +1145,7 @@
     },
     {
       "type": "logs",
-      "id": 23,
+      "id": 22,
       "title": "Login SSH berhasil",
       "description": "",
       "datasource": {
@@ -1264,7 +1182,7 @@
     },
     {
       "type": "logs",
-      "id": 24,
+      "id": 23,
       "title": "Login Web UI Proxmox gagal",
       "description": "Via LAN atau Cloudflare Tunnel (domain publik)",
       "datasource": {
@@ -1301,7 +1219,7 @@
     },
     {
       "type": "logs",
-      "id": 25,
+      "id": 24,
       "title": "fail2ban ban / unban",
       "description": "",
       "datasource": {
@@ -1338,7 +1256,7 @@
     },
     {
       "type": "logs",
-      "id": 26,
+      "id": 25,
       "title": "Login database (PostgreSQL)",
       "description": "Tanpa koneksi exporter monitoring",
       "datasource": {
@@ -1375,7 +1293,7 @@
     },
     {
       "type": "row",
-      "id": 27,
+      "id": 26,
       "title": "DR & data tier (replikasi DB, Redis, standby)",
       "collapsed": false,
       "gridPos": {
@@ -1388,7 +1306,7 @@
     },
     {
       "type": "stat",
-      "id": 28,
+      "id": 27,
       "title": "Replika DB terhubung",
       "description": "Replication slot di primary (104) aktif = replika DR (105) menerima WAL",
       "datasource": {
@@ -1470,7 +1388,7 @@
     },
     {
       "type": "stat",
-      "id": 29,
+      "id": 28,
       "title": "Lag replika",
       "description": "0 = replika sudah sama dengan primary (RPO ≈ 0)",
       "datasource": {
@@ -1541,7 +1459,7 @@
     },
     {
       "type": "stat",
-      "id": 30,
+      "id": 29,
       "title": "WAL tertahan di primary",
       "description": "Batas 2GB (max_slot_wal_keep_size); lewat itu replika harus resync",
       "datasource": {
@@ -1611,7 +1529,7 @@
     },
     {
       "type": "stat",
-      "id": 31,
+      "id": 30,
       "title": "Redis",
       "description": "",
       "datasource": {
@@ -1693,7 +1611,7 @@
     },
     {
       "type": "bargauge",
-      "id": 32,
+      "id": 31,
       "title": "Memori Redis",
       "description": "Policy noeviction: 100% = tulis ditolak",
       "datasource": {
@@ -1764,7 +1682,7 @@
     },
     {
       "type": "row",
-      "id": 33,
+      "id": 32,
       "title": "PITR - pgBackRest (backup terenkripsi + arsip WAL)",
       "collapsed": false,
       "gridPos": {
@@ -1777,7 +1695,7 @@
     },
     {
       "type": "stat",
-      "id": 34,
+      "id": 33,
       "title": "Backup PITR terakhir",
       "description": "Full Minggu 01:00, differential Senin-Sabtu 01:00 (diambil dari replika)",
       "datasource": {
@@ -1848,7 +1766,7 @@
     },
     {
       "type": "stat",
-      "id": 35,
+      "id": 34,
       "title": "Status repositori",
       "description": "",
       "datasource": {
@@ -1925,7 +1843,7 @@
     },
     {
       "type": "stat",
-      "id": 36,
+      "id": 35,
       "title": "WAL terakhir diarsip",
       "description": "Saat ada aktivitas, segmen diarsip maks tiap 60 detik (archive_timeout). DB idle = angka ini membesar tanpa masalah",
       "datasource": {
@@ -1988,7 +1906,7 @@
     },
     {
       "type": "stat",
-      "id": 37,
+      "id": 36,
       "title": "Arsip WAL gagal",
       "description": "",
       "datasource": {
@@ -2054,7 +1972,7 @@
     },
     {
       "type": "stat",
-      "id": 38,
+      "id": 37,
       "title": "Ukuran repositori",
       "description": "",
       "datasource": {

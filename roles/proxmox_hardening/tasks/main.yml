@@ -112,17 +112,14 @@
 # ---------------------------------------------------------------------------
 # node exporter + metrics backup
 # ---------------------------------------------------------------------------
-- name: Buat direktori textfile & state
+- name: Buat direktori textfile
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ pve_textfile_dir }}"
     state: directory
     mode: '0755'
-  loop:
-    - "{{ pve_textfile_dir }}"
-    - "{{ homelab_state_dir }}"
 
 # Default paket Debian mengecualikan /mnt dari metrics filesystem, padahal
-# HDD backup (/mnt/pve/proxmox-target) & Google Drive (/mnt/gdrive) ada di sana
+# HDD backup (/mnt/pve/proxmox-target) ada di sana
 - name: Argumen node exporter - sertakan mount di /mnt
   ansible.builtin.copy:
     dest: /etc/default/prometheus-node-exporter

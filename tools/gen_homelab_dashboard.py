@@ -115,12 +115,9 @@ bargauge("Umur backup vzdump per LXC",
          0, 19, 10, 7, unit="h", minv=0, maxv=48, steps=[("green", None), ("orange", 24), ("red", 26)],
          desc="Jam sejak file backup terbaru di BackupFolder (HDD). Job harian 02:00; merah = > 26 jam")
 stat("LXC belum pernah di-backup", [target("count(homelab_vzdump_last_backup_timestamp_seconds == 0) or vector(0)", "LXC", instant=True)],
-     10, 19, 4, 3, steps=[("green", None), ("red", 1)])
-stat("Offsite GDrive terakhir sukses", [target("(time() - homelab_offsite_last_success_timestamp_seconds) / 86400", "hari lalu", instant=True)],
-     14, 19, 5, 3, unit="d", decimals=1, steps=[("green", None), ("orange", 7), ("red", 8)],
-     desc="Upload terenkripsi mingguan (Minggu 05:00)")
+     10, 19, 7, 3, steps=[("green", None), ("red", 1)])
 stat("pg_dump terakhir sukses", [target("(time() - homelab_pg_backup_last_success_timestamp_seconds) / 3600", "jam lalu", instant=True)],
-     19, 19, 5, 3, unit="h", decimals=1, steps=[("green", None), ("orange", 25), ("red", 26)],
+     17, 19, 7, 3, unit="h", decimals=1, steps=[("green", None), ("orange", 25), ("red", 26)],
      desc="Dump harian 01:30 di LXC 104")
 bargauge("Ukuran backup terbaru", [target("homelab_vzdump_last_backup_size_bytes > 0", "{{vmid}} {{guest}}", instant=True)],
          10, 22, 14, 4, unit="bytes", minv=0, maxv=None, steps=[("blue", None)])
@@ -136,8 +133,6 @@ bargauge("Storage host pve", [
     target('homelab_lvm_thinpool_used_percent', "thin pool {{lv}} ({{type}})", instant=True, ref="A"),
     target('100 - node_filesystem_avail_bytes{host="pve",mountpoint="/mnt/pve/proxmox-target"} / node_filesystem_size_bytes{host="pve",mountpoint="/mnt/pve/proxmox-target"} * 100',
            "HDD backup (NTFS)", instant=True, ref="B"),
-    target('100 - node_filesystem_avail_bytes{host="pve",mountpoint="/mnt/gdrive"} / node_filesystem_size_bytes{host="pve",mountpoint="/mnt/gdrive"} * 100',
-           "Google Drive (kuota)", instant=True, ref="C"),
 ], 16, 27, 8, 7, desc="Thin pool = disk semua LXC. Penuh = LXC berhenti")
 stat("Update paket tertunda", [target("sum by (host) (apt_upgrades_pending)", "{{host}}", instant=True)], 0, 34, 24, 3,
      steps=[("green", None), ("orange", 1), ("red", 50)], desc="Dari apt.prom (node exporter). unattended-upgrades memasang patch keamanan otomatis")

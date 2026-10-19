@@ -14,7 +14,7 @@ groups:
           summary: "{{ '{{' }} $labels.job {{ '}}' }} di {{ '{{' }} $labels.instance {{ '}}' }} down"
 
       - alert: DiskHampirPenuh
-        # fuse.* dikecualikan: /etc/pve (pmxcfs) & /mnt/gdrive (kuota Google Drive)
+        # fuse.* dikecualikan: /etc/pve (pmxcfs)
         expr: |
           (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*|ramfs"}
             / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|fuse.*|ramfs"}) < 0.15
@@ -190,24 +190,6 @@ groups:
           host: pve
         annotations:
           summary: "LXC {{ '{{' }} $labels.vmid {{ '}}' }} ({{ '{{' }} $labels.guest {{ '}}' }}) belum pernah ter-backup selama 26 jam"
-
-      - alert: OffsiteBackupGagal
-        expr: homelab_offsite_last_failed == 1
-        for: 5m
-        labels:
-          severity: warning
-          host: pve
-        annotations:
-          summary: "Upload backup ke Google Drive terakhir GAGAL (journalctl -u homelab-offsite.service)"
-
-      - alert: OffsiteBackupTerlambat
-        expr: time() - homelab_offsite_last_success_timestamp_seconds > 8 * 86400
-        for: 1h
-        labels:
-          severity: warning
-          host: pve
-        annotations:
-          summary: "Tidak ada upload backup ke Google Drive yang sukses selama > 8 hari"
 
       - alert: PgDumpTerlambat
         expr: time() - homelab_pg_backup_last_success_timestamp_seconds > 26 * 3600

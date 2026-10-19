@@ -4,13 +4,11 @@
 #
 # Alur:
 #   02:00 setiap hari  vzdump semua LXC → BackupFolder (HDD NTFS)
-#   05:00 hari Minggu  backup terbaru per LXC → Google Drive (rclone, offsite)
 # =============================================================================
 
 # Storage Proxmox (sudah dibuat manual di Datacenter → Storage)
 proxmox_backup_storage: "BackupFolder"     # /mnt/pve/proxmox-target (HDD NTFS)
 proxmox_backup_storage_path: "/mnt/pve/proxmox-target"
-proxmox_gdrive_storage: "gdrive_backup"    # /mnt/gdrive (rclone mount)
 
 # Retensi di HDD - dipakai backup job DAN storage BackupFolder
 # (storage juga diset agar backup manual dari UI ikut dipangkas)
@@ -28,14 +26,7 @@ proxmox_backup_job:
   notes-template: !unsafe "{{guestname}}"
   enabled: 1
 
-# Offsite ke Google Drive - TERENKRIPSI (rclone crypt)
-# Isi & nama file dienkripsi di pve sebelum upload; password di secrets.yml
-# (rclone_crypt_password / rclone_crypt_password2)
-offsite_base_remote: "gdrive:"                          # remote Drive asli (untuk cek kuota)
-offsite_crypt_remote_name: "gdrive-crypt"
-offsite_crypt_target: "gdrive:ProxmoxBackup-encrypted"  # folder ciphertext di Drive
-offsite_rclone_remote: "{{ offsite_crypt_remote_name }}:dump"
-offsite_schedule: "Sun *-*-* 05:00:00"     # systemd OnCalendar (Asia/Jakarta)
-offsite_retention: "15d"                   # hapus file vzdump di GDrive > 15 hari (~2 set)
-offsite_min_free_gb: 2                     # sisakan ruang minimum di GDrive
-offsite_bwlimit: "{{ rclone_bandwidth_limit | default('2M') }}"
+# Offsite Google Drive sudah DIPENSIUNKAN - sisa konfigurasinya dihapus dari
+# host pve oleh role ini (storage, unit systemd, script, rclone.conf)
+proxmox_removed_storages:
+  - "gdrive_backup"

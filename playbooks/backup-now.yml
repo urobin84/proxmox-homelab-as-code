@@ -2,8 +2,7 @@
 # Playbook: jalankan backup manual / on-demand dari Mac admin
 #   1. pg_dump di LXC 104
 #   2. vzdump semua LXC → BackupFolder (retensi storage ikut diterapkan)
-#   3. (opsional) salin ke Google Drive: -e offsite=true
-# Eksekusi: ansible-playbook playbooks/backup-now.yml [-e offsite=true]
+# Eksekusi: ansible-playbook playbooks/backup-now.yml
 
 - name: "Dump PostgreSQL sekarang (LXC 104)"
   hosts: database
@@ -36,9 +35,3 @@
     - name: Tampilkan ringkasan vzdump
       ansible.builtin.debug:
         msg: "{{ vzdump_result.stderr_lines | select('search', 'Finished Backup|ERROR|archive file size') | list }}"
-
-    - name: Salin backup terbaru ke Google Drive
-      ansible.builtin.systemd:
-        name: homelab-offsite.service
-        state: started
-      when: offsite | default(false) | bool

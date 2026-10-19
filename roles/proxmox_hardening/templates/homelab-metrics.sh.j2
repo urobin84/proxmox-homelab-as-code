@@ -28,21 +28,6 @@ for id in $(pct list | awk 'NR>1 {print $1}'); do
     echo "homelab_vzdump_last_backup_size_bytes{vmid=\"$id\",guest=\"$name\"} $size"
 done
 
-echo "# HELP homelab_offsite_last_success_timestamp_seconds Waktu offsite Google Drive terakhir sukses (0 = belum pernah)"
-echo "# TYPE homelab_offsite_last_success_timestamp_seconds gauge"
-echo "homelab_offsite_last_success_timestamp_seconds $(cat "{{ homelab_state_dir }}/offsite-last-success" 2>/dev/null || echo 0)"
-
-echo "# HELP homelab_offsite_last_failed Status run offsite terakhir (1 = gagal)"
-echo "# TYPE homelab_offsite_last_failed gauge"
-# Belum pernah jalan sejak boot (StartTimestamp 0) dianggap tidak gagal
-result=$(systemctl show homelab-offsite.service -p Result --value 2>/dev/null || echo unknown)
-started=$(systemctl show homelab-offsite.service -p ExecMainStartTimestampMonotonic --value 2>/dev/null || echo 0)
-if [ "$result" = "success" ] || [ "$started" = "0" ]; then
-    echo "homelab_offsite_last_failed 0"
-else
-    echo "homelab_offsite_last_failed 1"
-fi
-
 # Thin pool LVM (disk semua LXC) - tidak terlihat oleh node exporter biasa
 echo "# HELP homelab_lvm_thinpool_used_percent Pemakaian data & metadata thin pool LVM"
 echo "# TYPE homelab_lvm_thinpool_used_percent gauge"

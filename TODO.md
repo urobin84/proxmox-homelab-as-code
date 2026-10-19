@@ -12,20 +12,20 @@ Pekerjaan lanjutan, diurutkan dari dampak terbesar terhadap keamanan & ketahanan
 - [ ] **Batasi lalu lintas keluar (egress)** dari LXC — proxy untuk apt/Docker/SMTP.
 - [ ] **TLS + autentikasi untuk Grafana/Prometheus/Loki** (saat ini HTTP di LAN,
       dibatasi firewall & `DOCKER-USER`).
-- [ ] **Client ID Google Drive sendiri dengan scope `drive.file`** — client ID bawaan
-      rclone dipensiunkan 2026, dan token saat ini punya akses ke seluruh Drive.
 - [ ] Rotasi berkala secret (password DB, Redis, replikasi) + runbook rotasi.
 - [ ] Reservasi DHCP untuk perangkat admin (IPSet `hl-admin`).
 
 ## Ketersediaan & DR
 
+- [ ] **Backup offsite** — semua backup (vzdump, pgBackRest) masih di satu lokasi
+      fisik; offsite Google Drive sudah dipensiunkan. Kandidat: disk eksternal yang
+      dirotasi, atau object storage S3-compatible (pgBackRest `repo2` + rclone crypt).
 - [ ] **Failover otomatis** (Patroni + etcd, butuh node witness ketiga) — saat ini
       failover satu perintah, dimulai manual.
 - [ ] **Sinkronisasi upload pengguna real-time** ke standby (saat ini ikut saat deploy)
       atau pindah ke object storage.
 - [ ] Failover aplikasi otomatis (health-check di Cloudflare / load balancer).
 - [ ] Jadwalkan `pitr-drill.yml` rutin (bulanan) + alert jika gagal.
-- [ ] Selidiki upload offsite lambat (data terkirim ±5× ukuran file; uji `--drive-chunk-size`, log `-vv`).
 - [ ] Pindahkan Laravel cache/session/queue ke Redis (TLS) setelah CA dipasang di host aplikasi.
 
 ## Jaringan
@@ -36,8 +36,8 @@ Pekerjaan lanjutan, diurutkan dari dampak terbesar terhadap keamanan & ketahanan
 ## Kualitas kode & operasional
 
 - [ ] CI: `ansible-lint`, `yamllint`, `terraform fmt/validate`, secret scanning (gitleaks).
-- [ ] Hapus komponen yang tidak dipakai: role `backup_agent`, template
-      `otel-collector.yml.j2`, variabel aplikasi DKM/DEV di `group_vars`.
+- [ ] Hapus komponen yang tidak dipakai: template `otel-collector.yml.j2`,
+      variabel aplikasi DKM/DEV di `group_vars`.
 - [ ] Kunci versi Grafana Alloy native (saat ini mengikuti repo apt).
 - [ ] Upgrade Grafana ke 11.x (dashboard Node Exporter Full terbaru butuh ≥ 11.6).
 - [ ] Monitoring repo apt yang gagal (`download.proxmox.com` sempat tak terjangkau).

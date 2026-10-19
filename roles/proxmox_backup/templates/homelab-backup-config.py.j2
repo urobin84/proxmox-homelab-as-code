@@ -16,11 +16,10 @@ STORAGES = {
         "is_mountpoint": "yes",
         "prune-backups": {{ proxmox_backup_prune | to_json }},
     },
-    # Hanya pengaman mount; storage ini tidak dipakai backup job
-    {{ proxmox_gdrive_storage | to_json }}: {
-        "is_mountpoint": "yes",
-    },
 }
+# Storage yang dipensiunkan - hanya entri config Proxmox yang dihapus,
+# isi direktori/mount tidak disentuh
+REMOVED_STORAGES = {{ proxmox_removed_storages | to_json }}
 
 
 def pvesh(*args):
@@ -58,6 +57,12 @@ for storage, wanted in STORAGES.items():
     if diff:
         pvesh("set", f"/storage/{storage}", *to_args(diff))
         changed.append(f"storage {storage}: {', '.join(diff)}")
+
+existing = {s["storage"] for s in pvesh("get", "/storage") or []}
+for storage in REMOVED_STORAGES:
+    if storage in existing:
+        pvesh("delete", f"/storage/{storage}")
+        changed.append(f"storage {storage}: dihapus")
 
 # --- Backup job ------------------------------------------------------------
 job_id = JOB.pop("id")

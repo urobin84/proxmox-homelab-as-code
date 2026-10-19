@@ -84,7 +84,7 @@
   roles:
     - postgres_backup
 
-- name: "Phase 3b - Host pve: hardening, monitoring & backup (vzdump + offsite GDrive)"
+- name: "Phase 3b - Host pve: hardening, monitoring & backup (vzdump)"
   hosts: proxmox
   become: yes
   gather_facts: no

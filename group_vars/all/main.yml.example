@@ -62,19 +62,6 @@ db_replica_host: "192.168.100.105"
 db_replica_port: 5432
 
 # ---------------------------------------------------------------------------
-# Backup & Monitoring (LXC 106 - BACKUP-AND-MONITORING)
-# PENTING: gdrive_backup dan BackupFolder sudah di-mount di Proxmox host (pve)
-# Path bind mount di LXC 106 (sesuaikan dengan konfigurasi Proxmox Anda):
-# ---------------------------------------------------------------------------
-backup_base_dir: "/mnt/backups"           # Bind mount dari BackupFolder (pve)
-gdrive_mount_path: "/mnt/gdrive_backup"   # Bind mount dari gdrive_backup (pve)
-backup_gdrive_folder: "homelab-backups"
-backup_retention_days: 30
-rclone_bandwidth_limit: "2M"      # Batasi rclone ke 2MB/s (jaga stabilitas jaringan rumah)
-backup_schedule_hour: "02"        # Jam 02:00 WIB
-backup_schedule_minute: "00"
-
-# ---------------------------------------------------------------------------
 # Observability (LXC 106) - Prometheus + Loki + Tempo + Grafana
 # Apps kirim OTLP ke Grafana Alloy di host yang sama (LXC 101)
 # ---------------------------------------------------------------------------

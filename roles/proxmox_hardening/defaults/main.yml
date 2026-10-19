@@ -16,7 +16,6 @@ pve_fail2ban_ignoreip: "127.0.0.1/8 ::1 {{ ansible_host }}"
 # Metrics untuk Prometheus (node exporter textfile collector)
 pve_textfile_dir: "/var/lib/prometheus/node-exporter"
 pve_metrics_interval: "15min"
-homelab_state_dir: "/var/lib/homelab"     # stamp waktu sukses offsite
 
 # Rule pve-firewall (level datacenter) - dicocokkan lewat comment
 pve_firewall_rules:

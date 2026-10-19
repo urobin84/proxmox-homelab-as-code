@@ -37,7 +37,7 @@ flowchart LR
     user([Pengguna]) --> cf[Cloudflare Tunnel]
     admin([Admin]) -->|SSH key + 2FA UI| pve
 
-    subgraph pve[Host Proxmox VE 9 — firewall mikrosegmentasi, vzdump, offsite]
+    subgraph pve[Host Proxmox VE 9 — firewall mikrosegmentasi, vzdump]
         direction LR
         subgraph DC[DC]
             app[101 App primary<br/>Laravel + Nginx]
@@ -61,14 +61,14 @@ flowchart LR
     replica -->|backup dari standby| mon
     app & standby & redis & db & replica -.metrics/logs.-> mon
     mon -->|email| alert([Alert])
-    pve -->|vzdump terenkripsi| gdrive[(Offsite<br/>Google Drive)]
+    pve -->|vzdump harian| hdd[(HDD backup<br/>terpisah)]
 ```
 
 ## Lapisan as Code
 
 | Lapisan | Alat | Isi |
 |---|---|---|
-| **1. Fisik** — host Proxmox | Ansible | Hardening SSH/fail2ban, firewall mikrosegmentasi, backup vzdump + offsite terenkripsi, node exporter, identitas Terraform (least privilege) |
+| **1. Fisik** — host Proxmox | Ansible | Hardening SSH/fail2ban, firewall mikrosegmentasi, backup vzdump ke HDD terpisah, node exporter, identitas Terraform (least privilege) |
 | **2. Virtual** — LXC | Terraform (`bpg/proxmox`) | CPU, RAM, disk, mount point, jaringan, DNS, flag firewall, autostart. LXC lama di-*import* tanpa dibuat ulang, dilindungi `prevent_destroy` |
 | **3. Software** — isi LXC | Ansible (24 role) | Aplikasi, database HA, Redis, PITR, observability, CA internal & TLS |
 
@@ -102,10 +102,11 @@ Prinsip yang dipegang di seluruh repo:
 | Kesalahan manusia (`DROP`/`DELETE`) | **PITR** pgBackRest (backup dari replika, repo AES-256) | ≤ 60 detik | menit |
 | Aplikasi primary mati | Warm standby identik | 0 (stateless, session di DB) | menit (ubah origin tunnel) |
 | LXC rusak | vzdump harian ke HDD terpisah | 24 jam | menit |
-| Host / disk rusak | Offsite Google Drive terenkripsi (rclone crypt) | 1 minggu | jam |
+| Disk sistem rusak | vzdump di HDD terpisah | 24 jam | jam |
+| Host hilang / rusak total | **Belum ada** — offsite belum tersedia (lihat [TODO](TODO.md)) | — | — |
 
 Jadwal: pgBackRest full Minggu & differential harian 01:00, `pg_dump` 01:30,
-vzdump 02:00, verifikasi repositori mingguan, offsite Minggu 05:00.
+vzdump 02:00, verifikasi repositori mingguan.
 
 ## Keamanan
 
@@ -128,7 +129,7 @@ vzdump 02:00, verifikasi repositori mingguan, offsite Minggu 05:00.
 ## Observability
 
 - **Metrics**: node exporter (6 LXC + host), PostgreSQL & Redis exporter, status backup
-  (vzdump, offsite, pg_dump, pgBackRest, arsip WAL) via textfile collector, thin pool LVM.
+  (vzdump, pg_dump, pgBackRest, arsip WAL) via textfile collector, thin pool LVM.
 - **Logs**: journald semua host (sshd, fail2ban, UFW, PostgreSQL, systemd) + log Docker
   → Loki via Grafana Alloy.
 - **Uptime**: Blackbox HTTP/TCP/TLS (termasuk validasi & masa berlaku sertifikat).
@@ -227,7 +228,7 @@ ansible-playbook playbooks/rebuild-replica.yml -e confirm=REBUILD-REPLICA
 ansible-playbook playbooks/pitr-drill.yml
 
 # Backup manual / deploy aplikasi (standby ikut tersinkron)
-ansible-playbook playbooks/backup-now.yml -e offsite=true
+ansible-playbook playbooks/backup-now.yml
 ansible-playbook playbooks/deploy-apps.yml
 
 # Firewall: lihat diff / rollback darurat
